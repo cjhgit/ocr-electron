@@ -1,0 +1,44 @@
+name: Release Mac
+
+on:
+  push:
+    branches:
+      - release-mac
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-mac
+  cancel-in-progress: true
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: pnpm --filter remend build && pnpm --filter streamdown build
+
+      - name: Build and publish Mac installer
+        working-directory: apps/desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm exec electron-vite build && pnpm exec electron-builder --mac --publish always

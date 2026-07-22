@@ -4,6 +4,7 @@ import {
   Download,
   Eye,
   FileSpreadsheet,
+  FolderOpen,
   RefreshCw,
   ScanSearch,
   Trash2,
@@ -12,9 +13,15 @@ import {
 } from 'lucide-react'
 import './App.css'
 import {
+  downloadServerModel,
+  fetchServerModelInfo,
+  fetchAppConfig,
   loadImagePixels,
+  openConfigFolder,
   recognizeImage,
+  saveAppConfig,
   type OcrModelVariant,
+  type OcrServerModelInfo,
 } from './lib/ocr-api'
 import {
   cancelFinanceCheckTask,
@@ -28,9 +35,6 @@ import {
   type FinanceCheckTaskItem,
   type FinanceCheckTaskStatus,
 } from './lib/finance-check-api'
-
-const MODEL_ROOT_KEY = 'ocr-model-root'
-const MODEL_VARIANT_KEY = 'ocr-model-variant'
 
 const TASK_STATUS_LABEL: Record<FinanceCheckTaskStatus, string> = {
   pending: '排队中',
@@ -74,6 +78,14 @@ function formatDuration(ms: number | null | undefined): string {
   if (ms < 1000) return `${Math.round(ms)} 毫秒`
   if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} 秒`
   return `${Math.floor(ms / 60_000)} 分 ${Math.round((ms % 60_000) / 1000)} 秒`
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '-'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
 function StatusBadge({ status }: { status: FinanceCheckTaskStatus | FinanceCheckResultStatus }) {
@@ -142,19 +154,42 @@ function JsonModal({
 function OcrSettings({
   modelRoot,
   variant,
+  configPath,
   onModelRootChange,
   onVariantChange,
+  onConfigChange,
+  onModelInfoChange,
 }: {
   modelRoot: string
   variant: OcrModelVariant
+  configPath: string
   onModelRootChange: (value: string) => void
   onVariantChange: (value: OcrModelVariant) => void
+  onConfigChange: (modelRoot: string, variant: OcrModelVariant) => void
+  onModelInfoChange: (value: OcrServerModelInfo) => void
 }) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [resultText, setResultText] = useState('')
   const [loading, setLoading] = useState(false)
+  const [modelInfo, setModelInfo] = useState<OcrServerModelInfo | null>(null)
+  const [modelStatusLoading, setModelStatusLoading] = useState(false)
+  const [modelDownloading, setModelDownloading] = useState(false)
+  const [openingConfigFolder, setOpeningConfigFolder] = useState(false)
   const [error, setError] = useState('')
+
+  async function refreshModelInfo() {
+    setModelStatusLoading(true)
+    try {
+      const info = await fetchServerModelInfo()
+      setModelInfo(info)
+      onModelInfoChange(info)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '获取模型状态失败')
+    } finally {
+      setModelStatusLoading(false)
+    }
+  }
 
   useEffect(() => {
     if (!selectedFile) {
@@ -165,6 +200,37 @@ function OcrSettings({
     setPreviewUrl(objectUrl)
     return () => URL.revokeObjectURL(objectUrl)
   }, [selectedFile])
+
+  useEffect(() => {
+    void refreshModelInfo()
+  }, [])
+
+  async function handleDownloadModel() {
+    setModelDownloading(true)
+    setError('')
+    try {
+      const info = await downloadServerModel()
+      setModelInfo(info)
+      onModelInfoChange(info)
+      onConfigChange(info.modelRoot, 'server')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '下载模型失败')
+    } finally {
+      setModelDownloading(false)
+    }
+  }
+
+  async function handleOpenConfigFolder() {
+    setOpeningConfigFolder(true)
+    setError('')
+    try {
+      await openConfigFolder()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '打开配置文件夹失败')
+    } finally {
+      setOpeningConfigFolder(false)
+    }
+  }
 
   async function handleRecognize() {
     if (!modelRoot.trim()) {
@@ -192,18 +258,37 @@ function OcrSettings({
   return (
     <div className="tab-page">
       <section className="panel">
-        <h2>模型配置</h2>
+        <div className="toolbar">
+          <div>
+            <h2>模型配置</h2>
+            {modelInfo && <p className="muted">server 模型目录：{modelInfo.modelDir}</p>}
+          </div>
+          <button type="button" className="secondary-button icon-text" onClick={() => void handleDownloadModel()} disabled={modelDownloading}>
+            <Download size={16} />{modelDownloading ? '下载中...' : modelInfo?.ready ? '重新下载 server 模型' : '下载 server 模型'}
+          </button>
+        </div>
         <label className="field">
           <span>paddleocr-js-onnx 路径</span>
           <input value={modelRoot} onChange={(event) => onModelRootChange(event.target.value)} placeholder="/path/to/paddleocr-js-onnx" />
         </label>
         <label className="field">
           <span>模型类型</span>
-          <select value={variant} onChange={(event) => onVariantChange(event.target.value as OcrModelVariant)}>
+          <select value={variant} onChange={(event) => onVariantChange(event.target.value as OcrModelVariant)} disabled>
             <option value="server">server（高精度）</option>
             <option value="mobile">mobile（轻量）</option>
           </select>
         </label>
+        {modelInfo && (
+          <div className="model-files">
+            {modelInfo.files.map((file) => (
+              <div key={file.fileName} className="model-file-row">
+                <span>{file.fileName}</span>
+                <strong>{file.exists ? formatBytes(file.size) : '未下载'}</strong>
+              </div>
+            ))}
+          </div>
+        )}
+        {!modelInfo && modelStatusLoading && <p className="muted">正在检测模型文件...</p>}
       </section>
 
       <section className="panel">
@@ -228,6 +313,18 @@ function OcrSettings({
         {error && <p className="error-text">{error}</p>}
         <textarea className="result-text" value={resultText} readOnly placeholder="识别结果会显示在这里" />
       </section>
+
+      <section className="panel">
+        <div className="toolbar">
+          <div>
+            <h2>配置文件</h2>
+            <p className="muted">{configPath || '~/.finance-checker/config.json'}</p>
+          </div>
+          <button type="button" className="secondary-button icon-text" onClick={() => void handleOpenConfigFolder()} disabled={openingConfigFolder}>
+            <FolderOpen size={16} />{openingConfigFolder ? '打开中...' : '打开配置文件夹'}
+          </button>
+        </div>
+      </section>
     </div>
   )
 }
@@ -235,9 +332,13 @@ function OcrSettings({
 function FinanceCheckPage({
   modelRoot,
   variant,
+  modelInfo,
+  onOpenSettings,
 }: {
   modelRoot: string
   variant: OcrModelVariant
+  modelInfo: OcrServerModelInfo | null
+  onOpenSettings: () => void
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [tasks, setTasks] = useState<FinanceCheckTask[]>([])
@@ -251,6 +352,8 @@ function FinanceCheckPage({
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const dragCountRef = useRef(0)
   const pageSize = 10
+  const shouldPromptForModel =
+    !modelRoot.trim() || (variant === 'server' && modelInfo?.modelRoot === modelRoot.trim() && !modelInfo.ready)
 
   async function refresh() {
     setLoading(true)
@@ -283,6 +386,10 @@ function FinanceCheckPage({
 
   async function uploadFile(file: File | null) {
     if (!file) return
+    if (shouldPromptForModel) {
+      setError('请先到设置下载 OCR 模型')
+      return
+    }
     if (!file.name.toLowerCase().endsWith('.xlsx')) {
       setError('仅支持 .xlsx 文件')
       return
@@ -303,6 +410,7 @@ function FinanceCheckPage({
 
   function handleDragEnter(event: DragEvent<HTMLDivElement>) {
     event.preventDefault()
+    if (shouldPromptForModel) return
     if (!event.dataTransfer.types.includes('Files')) return
     dragCountRef.current += 1
     setIsDragOver(true)
@@ -319,6 +427,7 @@ function FinanceCheckPage({
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault()
+    if (shouldPromptForModel) return
     dragCountRef.current = 0
     setIsDragOver(false)
     void uploadFile(event.dataTransfer.files?.[0] ?? null)
@@ -342,8 +451,8 @@ function FinanceCheckPage({
             <p className="muted">共 {loading ? '-' : total} 条{tasks.some((task) => task.taskStatus === 'pending' || task.taskStatus === 'running') ? ' · 执行中任务将自动刷新' : ''}</p>
           </div>
           <div className="actions">
-            <input ref={fileInputRef} type="file" accept=".xlsx" hidden onChange={(event) => void uploadFile(event.target.files?.[0] ?? null)} />
-            <button type="button" className="primary-button icon-text" disabled={uploading} onClick={() => fileInputRef.current?.click()}>
+            <input ref={fileInputRef} type="file" accept=".xlsx" hidden disabled={shouldPromptForModel} onChange={(event) => void uploadFile(event.target.files?.[0] ?? null)} />
+            <button type="button" className="primary-button icon-text" disabled={uploading || shouldPromptForModel} onClick={() => fileInputRef.current?.click()}>
               <Upload size={16} /> {uploading ? '提交中...' : '上传表格'}
             </button>
             <select value={statusFilter} onChange={(event) => {
@@ -355,12 +464,25 @@ function FinanceCheckPage({
             <button type="button" className="secondary-button icon-text" onClick={() => void refresh()}><RefreshCw size={16} />刷新</button>
           </div>
         </div>
+        {shouldPromptForModel && (
+          <div className="setup-notice">
+            <div>
+              <strong>请先下载 OCR 模型</strong>
+              <p>对账需要本地 server 模型文件。请前往设置下载模型，下载完成后会自动保存配置。</p>
+            </div>
+            <button type="button" className="primary-button" onClick={onOpenSettings}>去设置</button>
+          </div>
+        )}
         <div
           role="button"
           tabIndex={0}
-          className={`finance-upload-zone${isDragOver ? ' drag-over' : ''}${uploading ? ' uploading' : ''}`}
-          onClick={() => fileInputRef.current?.click()}
+          className={`finance-upload-zone${isDragOver ? ' drag-over' : ''}${uploading ? ' uploading' : ''}${shouldPromptForModel ? ' disabled' : ''}`}
+          onClick={() => {
+            if (shouldPromptForModel) return
+            fileInputRef.current?.click()
+          }}
           onKeyDown={(event) => {
+            if (shouldPromptForModel) return
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault()
               fileInputRef.current?.click()
@@ -575,11 +697,27 @@ function App() {
   const [activeTab, setActiveTab] = useState<'finance' | 'settings'>('finance')
   const [modelRoot, setModelRoot] = useState('')
   const [variant, setVariant] = useState<OcrModelVariant>('server')
+  const [configPath, setConfigPath] = useState('')
+  const [modelInfo, setModelInfo] = useState<OcrServerModelInfo | null>(null)
+  const [configError, setConfigError] = useState('')
 
   useEffect(() => {
-    setModelRoot(localStorage.getItem(MODEL_ROOT_KEY) ?? '')
-    const savedVariant = localStorage.getItem(MODEL_VARIANT_KEY)
-    if (savedVariant === 'mobile' || savedVariant === 'server') setVariant(savedVariant)
+    async function loadConfig() {
+      try {
+        const [config, info] = await Promise.all([
+          fetchAppConfig(),
+          fetchServerModelInfo(),
+        ])
+        setModelRoot(config.modelRoot)
+        setVariant(config.variant)
+        setConfigPath(config.configPath)
+        setModelInfo(info)
+      } catch (err) {
+        setConfigError(err instanceof Error ? err.message : '读取配置失败')
+      }
+    }
+
+    void loadConfig()
   }, [])
 
   const tabs = useMemo(
@@ -590,20 +728,36 @@ function App() {
     [],
   )
 
+  async function persistConfig(nextModelRoot: string, nextVariant: OcrModelVariant) {
+    try {
+      const config = await saveAppConfig({ modelRoot: nextModelRoot, variant: nextVariant })
+      setConfigPath(config.configPath)
+      setConfigError('')
+    } catch (err) {
+      setConfigError(err instanceof Error ? err.message : '保存配置失败')
+    }
+  }
+
   function handleModelRootChange(value: string) {
     setModelRoot(value)
-    localStorage.setItem(MODEL_ROOT_KEY, value)
+    void persistConfig(value, variant)
   }
 
   function handleVariantChange(value: OcrModelVariant) {
     setVariant(value)
-    localStorage.setItem(MODEL_VARIANT_KEY, value)
+    void persistConfig(modelRoot, value)
+  }
+
+  function handleConfigChange(nextModelRoot: string, nextVariant: OcrModelVariant) {
+    setModelRoot(nextModelRoot)
+    setVariant(nextVariant)
+    void persistConfig(nextModelRoot, nextVariant)
   }
 
   return (
     <div className="app">
       <header className="app-header">
-        <h1>OCR 文字识别</h1>
+        <h1>财务对账</h1>
         <nav className="tabs" aria-label="功能切换">
           {tabs.map((tab) => (
             <button key={tab.key} type="button" className={activeTab === tab.key ? 'active' : ''} onClick={() => setActiveTab(tab.key)}>
@@ -612,10 +766,11 @@ function App() {
           ))}
         </nav>
       </header>
+      {configError && <p className="error-text">{configError}</p>}
 
       {activeTab === 'finance'
-        ? <FinanceCheckPage modelRoot={modelRoot} variant={variant} />
-        : <OcrSettings modelRoot={modelRoot} variant={variant} onModelRootChange={handleModelRootChange} onVariantChange={handleVariantChange} />}
+        ? <FinanceCheckPage modelRoot={modelRoot} variant={variant} modelInfo={modelInfo} onOpenSettings={() => setActiveTab('settings')} />
+        : <OcrSettings modelRoot={modelRoot} variant={variant} configPath={configPath} onModelRootChange={handleModelRootChange} onVariantChange={handleVariantChange} onConfigChange={handleConfigChange} onModelInfoChange={setModelInfo} />}
     </div>
   )
 }

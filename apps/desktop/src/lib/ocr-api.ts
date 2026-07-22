@@ -20,6 +20,32 @@ export type OcrRecognizeResponse = {
   }
 }
 
+export type OcrServerModelFile = {
+  fileName: string
+  exists: boolean
+  size: number
+}
+
+export type OcrServerModelInfo = {
+  modelRoot: string
+  modelDir: string
+  files: OcrServerModelFile[]
+  ready: boolean
+}
+
+export type AppConfig = {
+  modelRoot: string
+  variant: OcrModelVariant
+  configDir: string
+  configPath: string
+}
+
+type ApiResponse<T> = {
+  code: number
+  message?: string
+  data?: T
+}
+
 function uint8ArrayToBase64(bytes: Uint8Array): string {
   let binary = ''
   const chunkSize = 8192
@@ -84,4 +110,52 @@ export async function recognizeImage(
   }
 
   return result.data.text
+}
+
+async function parseApiResponse<T>(response: Response, fallbackMessage: string): Promise<T> {
+  const result = (await response.json()) as ApiResponse<T>
+
+  if (!response.ok || result.code !== 0 || !result.data) {
+    throw new Error(result.message ?? fallbackMessage)
+  }
+
+  return result.data
+}
+
+export async function fetchServerModelInfo(): Promise<OcrServerModelInfo> {
+  const response = await fetch(`${OCR_API_BASE}/api/ocr/server-model`)
+  return parseApiResponse<OcrServerModelInfo>(response, '获取模型状态失败')
+}
+
+export async function downloadServerModel(): Promise<OcrServerModelInfo> {
+  const response = await fetch(`${OCR_API_BASE}/api/ocr/server-model/download`, {
+    method: 'POST',
+  })
+  return parseApiResponse<OcrServerModelInfo>(response, '下载模型失败')
+}
+
+export async function fetchAppConfig(): Promise<AppConfig> {
+  const response = await fetch(`${OCR_API_BASE}/api/settings/config`)
+  return parseApiResponse<AppConfig>(response, '读取配置失败')
+}
+
+export async function saveAppConfig(payload: {
+  modelRoot: string
+  variant: OcrModelVariant
+}): Promise<AppConfig> {
+  const response = await fetch(`${OCR_API_BASE}/api/settings/config`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  return parseApiResponse<AppConfig>(response, '保存配置失败')
+}
+
+export async function openConfigFolder(): Promise<void> {
+  const response = await fetch(`${OCR_API_BASE}/api/settings/config/open-folder`, {
+    method: 'POST',
+  })
+  await parseApiResponse<{ ok: boolean }>(response, '打开配置文件夹失败')
 }

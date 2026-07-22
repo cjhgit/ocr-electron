@@ -1,6 +1,8 @@
 import { resolve } from 'path'
-import { defineConfig, externalizeDepsPlugin, Plugin } from 'electron-vite'
+import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+import type { Plugin } from 'vite'
 
 function fixElectronRequire(): Plugin {
   return {
@@ -50,6 +52,11 @@ export default defineConfig({
   },
   renderer: {
     root: '.',
+    resolve: {
+      alias: {
+        '@': resolve(__dirname, 'src'),
+      },
+    },
     build: {
       rollupOptions: {
         input: resolve(__dirname, 'index.html'),
@@ -60,6 +67,6 @@ export default defineConfig({
       strictPort: true,
       host: '127.0.0.1',
     },
-    plugins: [react()],
+    plugins: [react(), tailwindcss()],
   },
 })

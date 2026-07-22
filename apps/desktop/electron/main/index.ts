@@ -1,7 +1,6 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import os from 'node:os'
 import Koa from 'koa'
 import Router from '@koa/router'
 import bodyParser from 'koa-bodyparser'
@@ -21,9 +20,12 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL
   ? path.join(process.env.APP_ROOT, 'public')
   : RENDERER_DIST
 
-if (os.release().startsWith('6.1')) app.disableHardwareAcceleration()
-
-if (process.platform === 'win32') app.setAppUserModelId(app.getName())
+if (process.platform === 'win32') {
+  // 避免 Windows 上 GPU 进程崩溃导致应用无法启动（虚拟机/RDP/驱动异常等场景）
+  app.disableHardwareAcceleration()
+  app.commandLine.appendSwitch('disable-gpu-sandbox')
+  app.setAppUserModelId(app.getName())
+}
 
 if (!app.requestSingleInstanceLock()) {
   app.quit()

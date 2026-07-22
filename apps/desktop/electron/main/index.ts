@@ -1,4 +1,5 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, Menu, shell } from 'electron'
+import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { execSync } from 'node:child_process'
 import path from 'node:path'
@@ -14,19 +15,42 @@ process.env.APP_ROOT = path.join(__dirname, '../..')
 
 export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'out/renderer')
 
-export const VITE_DEV_SERVER_URL =
-  process.env.ELECTRON_RENDERER_URL || process.env.VITE_DEV_SERVER_URL
+const isDev =
+  process.env.NODE_ENV_ELECTRON_VITE === 'development' || !app.isPackaged
 
-process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL
-  ? path.join(process.env.APP_ROOT, 'public')
-  : RENDERER_DIST
+function resolveDevServerUrl(): string | undefined {
+  const url =
+    process.env.ELECTRON_RENDERER_URL?.trim() ||
+    process.env.VITE_DEV_SERVER_URL?.trim()
 
-if (process.platform === 'win32') {
-  // 避免 Windows 上 GPU 进程崩溃导致应用无法启动（虚拟机/RDP/驱动异常等场景）
-  app.disableHardwareAcceleration()
-  app.commandLine.appendSwitch('disable-gpu-sandbox')
-  app.commandLine.appendSwitch('enable-software-rasterizer')
+  if (url) return url.replace(/\/$/, '')
+  if (isDev) return 'http://127.0.0.1:7777'
+  return undefined
+}
+
+function configureWindowsGpu(): void {
   app.setAppUserModelId(app.getName())
+
+  // swiftshader: 软件 GL，兼顾 GPU 崩溃环境与正常渲染（避免 disableHardwareAcceleration 白屏）
+  // disable: 完全禁用硬件加速（原方案，部分机器会白屏且 DevTools 无法打开）
+  // native: 不干预，使用系统 GPU
+  const gpuMode = process.env.ELECTRON_GPU_MODE ?? 'swiftshader'
+
+  switch (gpuMode) {
+    case 'disable':
+      app.disableHardwareAcceleration()
+      app.commandLine.appendSwitch('disable-gpu-sandbox')
+      app.commandLine.appendSwitch('enable-software-rasterizer')
+      break
+    case 'native':
+      break
+    case 'swiftshader':
+    default:
+      app.commandLine.appendSwitch('disable-gpu-sandbox')
+      app.commandLine.appendSwitch('use-angle', 'swiftshader')
+      app.commandLine.appendSwitch('use-gl', 'angle')
+      break
+  }
 
   try {
     execSync('chcp 65001 >nul', { stdio: 'ignore', windowsHide: true })
@@ -35,6 +59,18 @@ if (process.platform === 'win32') {
   }
 }
 
+if (process.platform === 'win32') {
+  configureWindowsGpu()
+}
+
+if (isDev) {
+  app.commandLine.appendSwitch('remote-debugging-port', '9222')
+}
+
+process.env.VITE_PUBLIC = resolveDevServerUrl()
+  ? path.join(process.env.APP_ROOT, 'public')
+  : RENDERER_DIST
+
 if (!app.requestSingleInstanceLock()) {
   app.quit()
   process.exit(0)
@@ -42,8 +78,32 @@ if (!app.requestSingleInstanceLock()) {
 
 let win: BrowserWindow | null = null
 
-const preload = path.join(__dirname, '../preload/index.js')
+const preloadPath = path.join(__dirname, '../preload/index.js')
 const indexHtml = path.join(RENDERER_DIST, 'index.html')
+
+function setupAppMenu() {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    ...(process.platform === 'darwin'
+      ? [{ role: 'appMenu' as const }]
+      : []),
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+  ]
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
 
 function createHttpServer() {
   const koaApp = new Koa()
@@ -161,22 +221,40 @@ function createHttpServer() {
 }
 
 async function createWindow() {
+  const devServerUrl = resolveDevServerUrl()
+  console.log('[main] isDev:', isDev)
+  console.log('[main] ELECTRON_RENDERER_URL:', process.env.ELECTRON_RENDERER_URL)
+  console.log('[main] load target:', devServerUrl ?? indexHtml)
+
+  const webPreferences: Electron.WebPreferences = {
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: false,
+    webSecurity: !isDev,
+  }
+
+  if (existsSync(preloadPath)) {
+    webPreferences.preload = preloadPath
+  }
+
   win = new BrowserWindow({
     title: 'Flow Chat',
     icon: path.join(process.env.VITE_PUBLIC, 'favicon.ico'),
     width: 800,
     height: 600,
-    show: false,
-    webPreferences: {
-      preload,
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
+    backgroundColor: '#ffffff',
+    webPreferences,
   })
 
   win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, url) => {
     console.error('[renderer] load failed:', errorCode, errorDescription, url)
+  })
+
+  win.webContents.on('did-finish-load', () => {
+    console.log('[renderer] did-finish-load:', win?.webContents.getURL())
+    if (isDev) {
+      win?.webContents.openDevTools({ mode: 'right' })
+    }
   })
 
   win.webContents.on('render-process-gone', (_event, details) => {
@@ -189,16 +267,11 @@ async function createWindow() {
     }
   })
 
-  if (VITE_DEV_SERVER_URL) {
-    await win.loadURL(VITE_DEV_SERVER_URL)
-    win.webContents.openDevTools({ mode: 'detach' })
+  if (devServerUrl) {
+    await win.loadURL(devServerUrl)
   } else {
     await win.loadFile(indexHtml)
   }
-
-  win.once('ready-to-show', () => {
-    win?.show()
-  })
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https:')) shell.openExternal(url)
@@ -207,8 +280,12 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  setupAppMenu()
   await createWindow()
   createHttpServer()
+  if (isDev) {
+    console.log('[main] remote debugging: chrome://inspect -> 127.0.0.1:9222')
+  }
 })
 
 app.on('window-all-closed', () => {

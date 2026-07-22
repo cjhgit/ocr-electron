@@ -1,5 +1,6 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
+import { execSync } from 'node:child_process'
 import path from 'node:path'
 import Koa from 'koa'
 import Router from '@koa/router'
@@ -24,7 +25,16 @@ if (process.platform === 'win32') {
   // 避免 Windows 上 GPU 进程崩溃导致应用无法启动（虚拟机/RDP/驱动异常等场景）
   app.disableHardwareAcceleration()
   app.commandLine.appendSwitch('disable-gpu-sandbox')
+  app.commandLine.appendSwitch('disable-direct-composition')
+  // 关闭 Chromium 后台联网（组件更新/连通性检测等），避免不可达 HTTPS 产生 SSL 报错日志
+  app.commandLine.appendSwitch('disable-background-networking')
   app.setAppUserModelId(app.getName())
+
+  try {
+    execSync('chcp 65001 >nul', { stdio: 'ignore', windowsHide: true })
+  } catch {
+    // ignore
+  }
 }
 
 if (!app.requestSingleInstanceLock()) {

@@ -25,9 +25,7 @@ if (process.platform === 'win32') {
   // 避免 Windows 上 GPU 进程崩溃导致应用无法启动（虚拟机/RDP/驱动异常等场景）
   app.disableHardwareAcceleration()
   app.commandLine.appendSwitch('disable-gpu-sandbox')
-  app.commandLine.appendSwitch('disable-direct-composition')
-  // 关闭 Chromium 后台联网（组件更新/连通性检测等），避免不可达 HTTPS 产生 SSL 报错日志
-  app.commandLine.appendSwitch('disable-background-networking')
+  app.commandLine.appendSwitch('enable-software-rasterizer')
   app.setAppUserModelId(app.getName())
 
   try {
@@ -168,16 +166,39 @@ async function createWindow() {
     icon: path.join(process.env.VITE_PUBLIC, 'favicon.ico'),
     width: 800,
     height: 600,
+    show: false,
     webPreferences: {
       preload,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
     },
   })
 
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, url) => {
+    console.error('[renderer] load failed:', errorCode, errorDescription, url)
+  })
+
+  win.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[renderer] process gone:', details.reason)
+  })
+
+  win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    if (level >= 2) {
+      console.error(`[renderer] ${message} (${sourceId}:${line})`)
+    }
+  })
+
   if (VITE_DEV_SERVER_URL) {
-    win.loadURL(VITE_DEV_SERVER_URL)
+    await win.loadURL(VITE_DEV_SERVER_URL)
+    win.webContents.openDevTools({ mode: 'detach' })
   } else {
-    win.loadFile(indexHtml)
+    await win.loadFile(indexHtml)
   }
+
+  win.once('ready-to-show', () => {
+    win?.show()
+  })
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https:')) shell.openExternal(url)
@@ -185,8 +206,8 @@ async function createWindow() {
   })
 }
 
-app.whenReady().then(() => {
-  createWindow()
+app.whenReady().then(async () => {
+  await createWindow()
   createHttpServer()
 })
 
@@ -195,8 +216,8 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow()
+app.on('activate', async () => {
+  if (BrowserWindow.getAllWindows().length === 0) await createWindow()
 })
 
 app.on('second-instance', () => {

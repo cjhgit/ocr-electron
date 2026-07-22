@@ -21,12 +21,19 @@ import type {
 import { CheckStatusKey, overallStatus, summarizeRows } from './types'
 import { loadRows } from './excel-reader'
 import {
-  extractImages,
   loadImageIdMap,
-  resolveImagePath,
+  WorkbookImageExtractor,
 } from './xlsx-images'
 
 const AMOUNT_TOLERANCE = 0.01
+
+function formatLogDuration(startedAt: number): string {
+  return `${Date.now() - startedAt}ms`
+}
+
+function formatOptionalLogDuration(durationMs: number | null): string {
+  return durationMs == null ? '-' : `${durationMs}ms`
+}
 
 export class FinanceCheckCancelledError extends Error {
   constructor(message = '用户已取消') {
@@ -57,6 +64,14 @@ export type WorkbookCheckOptions = {
 export type ConcurrentWorkbookCheckOptions = WorkbookCheckOptions & {
   onRowProcessed?: (processed: number, total: number, rowResult: RowCheckResult) => void | Promise<void>
   shouldCancel?: () => boolean | Promise<boolean>
+}
+
+type RowCheckWithTimings = {
+  rowResult: RowCheckResult
+  timings: {
+    paymentImageMs: number | null
+    merchantImageMs: number | null
+  }
 }
 
 function buildDuplicateFirstRowMap(rows: RowRecord[]): Map<number, number> {
@@ -111,7 +126,9 @@ export class FinanceChecker {
     xlsxPath: string,
     options: ConcurrentWorkbookCheckOptions = {},
   ): Promise<WorkbookCheckResult> {
+    const readStartedAt = Date.now()
     const rows = await loadRows(xlsxPath, options.sheetName)
+    console.log(`[finance-check] 读取 Excel 完成: ${xlsxPath}, rows=${rows.length}, duration=${formatLogDuration(readStartedAt)}`)
     if (options.rowNumbers) {
       const available = new Set(rows.map((row) => row.rowNumber))
       const missing = [...options.rowNumbers].filter((rowNumber) => !available.has(rowNumber))
@@ -122,7 +139,7 @@ export class FinanceChecker {
 
     const imageCacheDir = options.cacheDir ?? join(dirname(xlsxPath), '.cache', basename(xlsxPath, '.xlsx'))
     const imageIdMap = loadImageIdMap(xlsxPath)
-    const extractedImages = await extractImages(xlsxPath, imageCacheDir)
+    const imageExtractor = new WorkbookImageExtractor(xlsxPath, imageCacheDir)
     const duplicateFirstRowByRow = buildDuplicateFirstRowMap(rows)
     const concurrency = options.concurrency ?? FINANCE_CHECK_ROW_CONCURRENCY
     const rowResults: RowCheckResult[] = []
@@ -149,9 +166,11 @@ export class FinanceChecker {
       if (options.shouldCancel && (await options.shouldCancel())) {
         throw new FinanceCheckCancelledError()
       }
-      const rowResult = await this.buildDataRowResult(row, duplicateFirstRowByRow, imageIdMap, extractedImages)
+      const rowStartedAt = Date.now()
+      const { rowResult, timings } = await this.buildDataRowResult(row, duplicateFirstRowByRow, imageIdMap, imageExtractor)
       rowResults[rowIndex] = rowResult
       processed += 1
+      console.log(`[finance-check] 第 ${row.rowNumber} 行处理完成: duration=${formatLogDuration(rowStartedAt)}, paymentImageParse=${formatOptionalLogDuration(timings.paymentImageMs)}, merchantImageParse=${formatOptionalLogDuration(timings.merchantImageMs)}, progress=${processed}/${totalRows}`)
       await options.onRowProcessed?.(processed, totalRows, rowResult)
     })
 
@@ -165,12 +184,12 @@ export class FinanceChecker {
   async checkRow(
     row: RowRecord,
     imageIdMap: Map<string, string>,
-    extractedImages: Map<string, string>,
+    imageExtractor: WorkbookImageExtractor,
   ): Promise<RowCheckResult> {
     return {
       row,
-      paymentCheck: await this.checkPayment(row, imageIdMap, extractedImages),
-      merchantCheck: await this.checkMerchant(row, imageIdMap, extractedImages),
+      paymentCheck: await this.checkPayment(row, imageIdMap, imageExtractor),
+      merchantCheck: await this.checkMerchant(row, imageIdMap, imageExtractor),
     }
   }
 
@@ -186,18 +205,50 @@ export class FinanceChecker {
     row: RowRecord,
     duplicateFirstRowByRow: Map<number, number>,
     imageIdMap: Map<string, string>,
-    extractedImages: Map<string, string>,
-  ): Promise<RowCheckResult> {
+    imageExtractor: WorkbookImageExtractor,
+  ): Promise<RowCheckWithTimings> {
     const duplicateFirstRow = duplicateFirstRowByRow.get(row.rowNumber)
     if (duplicateFirstRow != null) {
       const duplicateMessage = `核销券码与第 ${duplicateFirstRow} 行重复`
       return {
-        row,
-        paymentCheck: failCheck('推单实付金额', row.expectedPaidAmount, duplicateMessage),
-        merchantCheck: failCheck('商家实收', row.expectedMerchantAmount, duplicateMessage),
+        rowResult: {
+          row,
+          paymentCheck: failCheck('推单实付金额', row.expectedPaidAmount, duplicateMessage),
+          merchantCheck: failCheck('商家实收', row.expectedMerchantAmount, duplicateMessage),
+        },
+        timings: {
+          paymentImageMs: null,
+          merchantImageMs: null,
+        },
       }
     }
-    return this.checkRow(row, imageIdMap, extractedImages)
+    return this.checkRowWithTimings(row, imageIdMap, imageExtractor)
+  }
+
+  private async checkRowWithTimings(
+    row: RowRecord,
+    imageIdMap: Map<string, string>,
+    imageExtractor: WorkbookImageExtractor,
+  ): Promise<RowCheckWithTimings> {
+    const paymentStartedAt = Date.now()
+    const paymentCheck = await this.checkPayment(row, imageIdMap, imageExtractor)
+    const paymentImageMs = Date.now() - paymentStartedAt
+
+    const merchantStartedAt = Date.now()
+    const merchantCheck = await this.checkMerchant(row, imageIdMap, imageExtractor)
+    const merchantImageMs = Date.now() - merchantStartedAt
+
+    return {
+      rowResult: {
+        row,
+        paymentCheck,
+        merchantCheck,
+      },
+      timings: {
+        paymentImageMs,
+        merchantImageMs,
+      },
+    }
   }
 
   private getOcrResult(imagePath: string): Promise<PaddleOcrRecognizeResult> {
@@ -228,12 +279,12 @@ export class FinanceChecker {
   private async checkPayment(
     row: RowRecord,
     imageIdMap: Map<string, string>,
-    extractedImages: Map<string, string>,
+    imageExtractor: WorkbookImageExtractor,
   ): Promise<FieldCheck> {
     const fieldName = '推单实付金额'
     const normalizedCode = normalizeCouponCode(row.couponCode)
     if (!normalizedCode) return errorCheck(fieldName, row.expectedPaidAmount, '缺少核销券码')
-    const imagePath = resolveImagePath(row.paymentImageId, imageIdMap, extractedImages)
+    const imagePath = await imageExtractor.resolveImagePath(row.paymentImageId, imageIdMap)
     if (!imagePath) return errorCheck(fieldName, row.expectedPaidAmount, '未找到实付券码截图')
 
     const paymentMap = await this.getPaymentMap(imagePath)
@@ -279,12 +330,12 @@ export class FinanceChecker {
   private async checkMerchant(
     row: RowRecord,
     imageIdMap: Map<string, string>,
-    extractedImages: Map<string, string>,
+    imageExtractor: WorkbookImageExtractor,
   ): Promise<FieldCheck> {
     const fieldName = '商家实收'
     const normalizedCode = normalizeCouponCode(row.couponCode)
     if (!normalizedCode) return errorCheck(fieldName, row.expectedMerchantAmount, '缺少核销券码')
-    const imagePath = resolveImagePath(row.merchantImageId, imageIdMap, extractedImages)
+    const imagePath = await imageExtractor.resolveImagePath(row.merchantImageId, imageIdMap)
     if (!imagePath) return errorCheck(fieldName, row.expectedMerchantAmount, '未找到商家实收图')
 
     const merchantMap = await this.getMerchantMap(imagePath)

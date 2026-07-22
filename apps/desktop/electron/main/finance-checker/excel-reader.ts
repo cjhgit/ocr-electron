@@ -39,8 +39,10 @@ export const FINANCE_CHECK_UPLOAD_REQUIRED_FIELDS = [
 
 const PROCESSING_REQUIRED_FIELDS: HeaderField[] = [
   'couponCode',
+  'paymentImage',
   'expectedPaidAmount',
   'expectedMerchantAmount',
+  'merchantImage',
 ]
 
 function normalizeHeader(value: unknown): string {

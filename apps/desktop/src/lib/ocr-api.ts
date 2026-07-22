@@ -36,6 +36,7 @@ export type OcrServerModelInfo = {
 export type AppConfig = {
   modelRoot: string
   variant: OcrModelVariant
+  financeCheckRowConcurrency: number
   configDir: string
   configPath: string
 }
@@ -142,6 +143,7 @@ export async function fetchAppConfig(): Promise<AppConfig> {
 export async function saveAppConfig(payload: {
   modelRoot: string
   variant: OcrModelVariant
+  financeCheckRowConcurrency: number
 }): Promise<AppConfig> {
   const response = await fetch(`${OCR_API_BASE}/api/settings/config`, {
     method: 'POST',

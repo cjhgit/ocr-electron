@@ -29,6 +29,7 @@ import {
   fetchFinanceCheckTask,
   fetchFinanceCheckTaskItems,
   fetchFinanceCheckTasks,
+  openFinanceCheckSourceFile,
   uploadFinanceCheckTask,
   type FinanceCheckResultStatus,
   type FinanceCheckTask,
@@ -78,6 +79,13 @@ function formatDuration(ms: number | null | undefined): string {
   if (ms < 1000) return `${Math.round(ms)} 毫秒`
   if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} 秒`
   return `${Math.floor(ms / 60_000)} 分 ${Math.round((ms % 60_000) / 1000)} 秒`
+}
+
+function formatTaskDuration(task: FinanceCheckTask, nowMs: number): string {
+  if (task.taskStatus === 'pending' || task.taskStatus === 'running') {
+    return formatDuration(nowMs - new Date(task.createdAt).getTime())
+  }
+  return formatDuration(task.durationMs)
 }
 
 function formatBytes(bytes: number): string {
@@ -154,18 +162,22 @@ function JsonModal({
 function OcrSettings({
   modelRoot,
   variant,
+  financeCheckRowConcurrency,
   configPath,
   onModelRootChange,
   onVariantChange,
+  onFinanceCheckRowConcurrencyChange,
   onConfigChange,
   onModelInfoChange,
 }: {
   modelRoot: string
   variant: OcrModelVariant
+  financeCheckRowConcurrency: number
   configPath: string
   onModelRootChange: (value: string) => void
   onVariantChange: (value: OcrModelVariant) => void
-  onConfigChange: (modelRoot: string, variant: OcrModelVariant) => void
+  onFinanceCheckRowConcurrencyChange: (value: number) => void
+  onConfigChange: (modelRoot: string, variant: OcrModelVariant, financeCheckRowConcurrency: number) => void
   onModelInfoChange: (value: OcrServerModelInfo) => void
 }) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
@@ -212,7 +224,7 @@ function OcrSettings({
       const info = await downloadServerModel()
       setModelInfo(info)
       onModelInfoChange(info)
-      onConfigChange(info.modelRoot, 'server')
+      onConfigChange(info.modelRoot, 'server', financeCheckRowConcurrency)
     } catch (err) {
       setError(err instanceof Error ? err.message : '下载模型失败')
     } finally {
@@ -278,6 +290,17 @@ function OcrSettings({
             <option value="mobile">mobile（轻量）</option>
           </select>
         </label>
+        <label className="field">
+          <span>对账行并发数</span>
+          <input
+            type="number"
+            min={1}
+            max={20}
+            step={1}
+            value={financeCheckRowConcurrency}
+            onChange={(event) => onFinanceCheckRowConcurrencyChange(Number(event.target.value))}
+          />
+        </label>
         {modelInfo && (
           <div className="model-files">
             {modelInfo.files.map((file) => (
@@ -332,11 +355,13 @@ function OcrSettings({
 function FinanceCheckPage({
   modelRoot,
   variant,
+  financeCheckRowConcurrency,
   modelInfo,
   onOpenSettings,
 }: {
   modelRoot: string
   variant: OcrModelVariant
+  financeCheckRowConcurrency: number
   modelInfo: OcrServerModelInfo | null
   onOpenSettings: () => void
 }) {
@@ -350,6 +375,7 @@ function FinanceCheckPage({
   const [isDragOver, setIsDragOver] = useState(false)
   const [error, setError] = useState('')
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const dragCountRef = useRef(0)
   const pageSize = 10
   const shouldPromptForModel =
@@ -384,6 +410,13 @@ function FinanceCheckPage({
     return () => window.clearInterval(timer)
   }, [tasks, page, statusFilter])
 
+  useEffect(() => {
+    const hasActive = tasks.some((task) => task.taskStatus === 'pending' || task.taskStatus === 'running')
+    if (!hasActive) return
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [tasks])
+
   async function uploadFile(file: File | null) {
     if (!file) return
     if (shouldPromptForModel) {
@@ -397,7 +430,12 @@ function FinanceCheckPage({
     setUploading(true)
     setError('')
     try {
-      await uploadFinanceCheckTask({ file, modelRoot: modelRoot.trim(), variant })
+      await uploadFinanceCheckTask({
+        file,
+        modelRoot: modelRoot.trim(),
+        variant,
+        rowConcurrency: financeCheckRowConcurrency,
+      })
       setPage(1)
       await refresh()
     } catch (err) {
@@ -405,6 +443,15 @@ function FinanceCheckPage({
     } finally {
       setUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  async function handleOpenSourceFile(taskId: string) {
+    setError('')
+    try {
+      await openFinanceCheckSourceFile(taskId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '打开原文件失败')
     }
   }
 
@@ -520,11 +567,12 @@ function FinanceCheckPage({
                   <td><StatusBadge status={task.taskStatus} /></td>
                   <td className="error-cell"><ErrorMessageCell message={task.errorMessage} /></td>
                   <td><TaskProgress task={task} />{task.taskStatus === 'succeeded' && <SummaryText task={task} />}</td>
-                  <td>{formatDuration(task.durationMs)}</td>
+                  <td>{formatTaskDuration(task, nowMs)}</td>
                   <td>{formatTime(task.createdAt)}</td>
                   <td>
                     <div className="row-actions">
                       <button type="button" className="ghost-button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
+                      <button type="button" className="ghost-button" onClick={() => void handleOpenSourceFile(task.id)}><FolderOpen size={14} />原文件</button>
                       {task.taskStatus === 'succeeded' && task.resultDownloadUrl && <a className="ghost-button" href={task.resultDownloadUrl}><Download size={14} />下载</a>}
                       {(task.taskStatus === 'pending' || task.taskStatus === 'running')
                         ? <button type="button" className="ghost-button danger" onClick={async () => { await cancelFinanceCheckTask(task.id); await refresh() }}><XCircle size={14} />取消</button>
@@ -555,6 +603,7 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
   const [itemStatusFilter, setItemStatusFilter] = useState<FinanceCheckResultStatus | 'all'>('all')
   const [jsonTarget, setJsonTarget] = useState<{ title: string; details: Record<string, unknown> | null } | null>(null)
   const [error, setError] = useState('')
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const itemPageSize = 50
 
   async function refresh() {
@@ -585,7 +634,22 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
     return () => window.clearInterval(timer)
   }, [task?.taskStatus, taskId, itemPage, itemStatusFilter])
 
+  useEffect(() => {
+    if (task?.taskStatus !== 'pending' && task?.taskStatus !== 'running') return
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [task?.taskStatus])
+
   const pageCount = Math.max(1, Math.ceil(itemTotal / itemPageSize))
+
+  async function handleOpenSourceFile() {
+    setError('')
+    try {
+      await openFinanceCheckSourceFile(taskId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '打开原文件失败')
+    }
+  }
 
   return (
     <div className="tab-page">
@@ -599,6 +663,7 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
             </div>
           </div>
           <div className="actions">
+            {task && <button type="button" className="secondary-button icon-text" onClick={() => void handleOpenSourceFile()}><FolderOpen size={16} />查看原文件</button>}
             {task?.resultDownloadUrl && <a className="secondary-button icon-text" href={task.resultDownloadUrl}><Download size={16} />下载结果</a>}
             {task && (task.taskStatus === 'pending' || task.taskStatus === 'running') && <button type="button" className="secondary-button danger icon-text" onClick={async () => { await cancelFinanceCheckTask(taskId); await refresh() }}><XCircle size={16} />取消任务</button>}
             {task && task.taskStatus !== 'pending' && task.taskStatus !== 'running' && <button type="button" className="secondary-button danger icon-text" onClick={async () => { if (window.confirm(`确定删除「${task.sourceFileName}」吗？`)) { await deleteFinanceCheckTask(taskId); onBack() } }}><Trash2 size={16} />删除任务</button>}
@@ -609,10 +674,12 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
         {task && (
           <div className="info-grid">
             <Info label="原始文件" value={task.sourceFileName} />
+            <Info label="原始文件路径" value={task.sourcePath} />
             <Info label="结果文件" value={task.resultFileName ?? '-'} />
             <Info label="创建时间" value={formatTime(task.createdAt)} />
             <Info label="完成时间" value={formatTime(task.finishedAt)} />
-            <Info label="耗时" value={formatDuration(task.durationMs)} />
+            <Info label="耗时" value={formatTaskDuration(task, nowMs)} />
+            <Info label="行并发数" value={String(task.rowConcurrency)} />
             <Info label="对账汇总" value={task.summary ? `通过 ${task.summary.pass} / 不通过 ${task.summary.fail} / 跳过 ${task.summary.skip} / 异常 ${task.summary.error}` : '-'} />
           </div>
         )}
@@ -697,6 +764,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<'finance' | 'settings'>('finance')
   const [modelRoot, setModelRoot] = useState('')
   const [variant, setVariant] = useState<OcrModelVariant>('server')
+  const [financeCheckRowConcurrency, setFinanceCheckRowConcurrency] = useState(5)
   const [configPath, setConfigPath] = useState('')
   const [modelInfo, setModelInfo] = useState<OcrServerModelInfo | null>(null)
   const [configError, setConfigError] = useState('')
@@ -710,6 +778,7 @@ function App() {
         ])
         setModelRoot(config.modelRoot)
         setVariant(config.variant)
+        setFinanceCheckRowConcurrency(config.financeCheckRowConcurrency)
         setConfigPath(config.configPath)
         setModelInfo(info)
       } catch (err) {
@@ -728,9 +797,18 @@ function App() {
     [],
   )
 
-  async function persistConfig(nextModelRoot: string, nextVariant: OcrModelVariant) {
+  function normalizeFinanceCheckRowConcurrency(value: number): number {
+    if (!Number.isFinite(value)) return 5
+    return Math.max(1, Math.min(20, Math.round(value)))
+  }
+
+  async function persistConfig(nextModelRoot: string, nextVariant: OcrModelVariant, nextFinanceCheckRowConcurrency: number) {
     try {
-      const config = await saveAppConfig({ modelRoot: nextModelRoot, variant: nextVariant })
+      const config = await saveAppConfig({
+        modelRoot: nextModelRoot,
+        variant: nextVariant,
+        financeCheckRowConcurrency: nextFinanceCheckRowConcurrency,
+      })
       setConfigPath(config.configPath)
       setConfigError('')
     } catch (err) {
@@ -740,18 +818,26 @@ function App() {
 
   function handleModelRootChange(value: string) {
     setModelRoot(value)
-    void persistConfig(value, variant)
+    void persistConfig(value, variant, financeCheckRowConcurrency)
   }
 
   function handleVariantChange(value: OcrModelVariant) {
     setVariant(value)
-    void persistConfig(modelRoot, value)
+    void persistConfig(modelRoot, value, financeCheckRowConcurrency)
   }
 
-  function handleConfigChange(nextModelRoot: string, nextVariant: OcrModelVariant) {
+  function handleFinanceCheckRowConcurrencyChange(value: number) {
+    const normalized = normalizeFinanceCheckRowConcurrency(value)
+    setFinanceCheckRowConcurrency(normalized)
+    void persistConfig(modelRoot, variant, normalized)
+  }
+
+  function handleConfigChange(nextModelRoot: string, nextVariant: OcrModelVariant, nextFinanceCheckRowConcurrency: number) {
+    const normalized = normalizeFinanceCheckRowConcurrency(nextFinanceCheckRowConcurrency)
     setModelRoot(nextModelRoot)
     setVariant(nextVariant)
-    void persistConfig(nextModelRoot, nextVariant)
+    setFinanceCheckRowConcurrency(normalized)
+    void persistConfig(nextModelRoot, nextVariant, normalized)
   }
 
   return (
@@ -769,8 +855,8 @@ function App() {
       {configError && <p className="error-text">{configError}</p>}
 
       {activeTab === 'finance'
-        ? <FinanceCheckPage modelRoot={modelRoot} variant={variant} modelInfo={modelInfo} onOpenSettings={() => setActiveTab('settings')} />
-        : <OcrSettings modelRoot={modelRoot} variant={variant} configPath={configPath} onModelRootChange={handleModelRootChange} onVariantChange={handleVariantChange} onConfigChange={handleConfigChange} onModelInfoChange={setModelInfo} />}
+        ? <FinanceCheckPage modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} modelInfo={modelInfo} onOpenSettings={() => setActiveTab('settings')} />
+        : <OcrSettings modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} configPath={configPath} onModelRootChange={handleModelRootChange} onVariantChange={handleVariantChange} onFinanceCheckRowConcurrencyChange={handleFinanceCheckRowConcurrencyChange} onConfigChange={handleConfigChange} onModelInfoChange={setModelInfo} />}
     </div>
   )
 }

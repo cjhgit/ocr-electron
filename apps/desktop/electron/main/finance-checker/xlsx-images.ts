@@ -54,27 +54,38 @@ export function loadImageIdMap(xlsxPath: string): Map<string, string> {
   return imageMap
 }
 
-export async function extractImages(xlsxPath: string, outputDir: string): Promise<Map<string, string>> {
-  await mkdir(outputDir, { recursive: true })
-  const extracted = new Map<string, string>()
-  const zip = new AdmZip(xlsxPath)
-  for (const entry of zip.getEntries()) {
-    if (!entry.entryName.startsWith('xl/media/') || entry.entryName.endsWith('/')) continue
-    const filename = basename(entry.entryName)
-    const target = join(outputDir, filename)
-    await writeFile(target, entry.getData())
-    extracted.set(filename, target)
-  }
-  return extracted
-}
+export class WorkbookImageExtractor {
+  private readonly zip: AdmZip
+  private readonly extracted = new Map<string, Promise<string | null>>()
 
-export function resolveImagePath(
-  imageId: string | null | undefined,
-  imageIdMap: Map<string, string>,
-  extractedImages: Map<string, string>,
-): string | null {
-  if (!imageId) return null
-  const mediaName = imageIdMap.get(imageId)
-  if (!mediaName) return null
-  return extractedImages.get(mediaName) ?? null
+  constructor(
+    xlsxPath: string,
+    private readonly outputDir: string,
+  ) {
+    this.zip = new AdmZip(xlsxPath)
+  }
+
+  resolveImagePath(
+    imageId: string | null | undefined,
+    imageIdMap: Map<string, string>,
+  ): Promise<string | null> {
+    if (!imageId) return Promise.resolve(null)
+    const mediaName = imageIdMap.get(imageId)
+    if (!mediaName) return Promise.resolve(null)
+
+    if (!this.extracted.has(mediaName)) {
+      this.extracted.set(mediaName, this.extractMedia(mediaName))
+    }
+    return this.extracted.get(mediaName)!
+  }
+
+  private async extractMedia(mediaName: string): Promise<string | null> {
+    const entry = this.zip.getEntry(`xl/media/${mediaName}`)
+    if (!entry || entry.isDirectory) return null
+
+    await mkdir(this.outputDir, { recursive: true })
+    const target = join(this.outputDir, mediaName)
+    await writeFile(target, entry.getData())
+    return target
+  }
 }

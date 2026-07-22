@@ -20,9 +20,11 @@ export type FinanceCheckTask = {
   id: string
   taskStatus: FinanceCheckTaskStatus
   sourceFileName: string
+  sourcePath: string
   resultFileName: string | null
   sheetName: string | null
   tolerance: number
+  rowConcurrency: number
   summary: FinanceCheckSummary | null
   totalRows: number | null
   processedRows: number | null
@@ -74,34 +76,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return result.data
 }
 
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const value = String(reader.result ?? '')
-      resolve(value.includes(',') ? value.slice(value.indexOf(',') + 1) : value)
-    }
-    reader.onerror = () => reject(new Error('读取文件失败'))
-    reader.readAsDataURL(file)
-  })
-}
-
 export async function uploadFinanceCheckTask(payload: {
   file: File
   modelRoot: string
   variant: 'mobile' | 'server'
+  rowConcurrency: number
 }) {
+  const formData = new FormData()
+  formData.set('file', payload.file, payload.file.name)
+  formData.set('modelRoot', payload.modelRoot)
+  formData.set('variant', payload.variant)
+  formData.set('rowConcurrency', String(payload.rowConcurrency))
+
   return request<{ taskId: string; taskStatus: FinanceCheckTaskStatus }>(
     '/api/finance-check/tasks',
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        fileName: payload.file.name,
-        contentBase64: await fileToBase64(payload.file),
-        modelRoot: payload.modelRoot,
-        variant: payload.variant,
-      }),
+      body: formData,
     },
   )
 }
@@ -148,5 +139,11 @@ export function cancelFinanceCheckTask(taskId: string) {
 export function deleteFinanceCheckTask(taskId: string) {
   return request<{ ok: boolean }>(`/api/finance-check/tasks/${taskId}`, {
     method: 'DELETE',
+  })
+}
+
+export function openFinanceCheckSourceFile(taskId: string) {
+  return request<{ ok: boolean }>(`/api/finance-check/tasks/${taskId}/open-source`, {
+    method: 'POST',
   })
 }

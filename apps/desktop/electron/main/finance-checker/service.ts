@@ -2,11 +2,11 @@ import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { homedir } from 'node:os'
+import { shell } from 'electron'
 import { nanoid } from 'nanoid'
 import type { Context } from 'koa'
 import { recognizeImageFromPath } from '../ocr/service'
-import { FINANCE_CHECK_TOLERANCE } from './constants'
-import { validateFinanceCheckUpload } from './excel-reader'
+import { FINANCE_CHECK_ROW_CONCURRENCY, FINANCE_CHECK_TOLERANCE } from './constants'
 import { auditOutputFilename, writeAuditWorkbook } from './excel-writer'
 import {
   FinanceChecker,
@@ -48,9 +48,11 @@ export type FinanceCheckTask = {
   id: string
   taskStatus: FinanceCheckTaskStatus
   sourceFileName: string
+  sourcePath: string
   resultFileName: string | null
   sheetName: string | null
   tolerance: number
+  rowConcurrency: number
   summary: FinanceCheckSummary | null
   totalRows: number | null
   processedRows: number | null
@@ -89,9 +91,11 @@ function publicTask(task: StoredTask): FinanceCheckTask {
     id: task.id,
     taskStatus: task.taskStatus,
     sourceFileName: task.sourceFileName,
+    sourcePath: task.sourcePath,
     resultFileName: task.resultFileName,
     sheetName: task.sheetName,
     tolerance: task.tolerance,
+    rowConcurrency: task.rowConcurrency ?? FINANCE_CHECK_ROW_CONCURRENCY,
     summary: task.summary,
     totalRows: task.totalRows,
     processedRows: task.processedRows,
@@ -238,6 +242,7 @@ async function runTask(task: StoredTask): Promise<void> {
 
     const result = await checker.checkWorkbookConcurrent(task.sourcePath, {
       cacheDir: join(taskDir(task.id), '.cache'),
+      concurrency: task.rowConcurrency ?? FINANCE_CHECK_ROW_CONCURRENCY,
       shouldCancel: async () => {
         const store = await readStore()
         return store.tasks.find((item) => item.id === task.id)?.cancelledRequested === true
@@ -299,19 +304,18 @@ async function processQueue(): Promise<void> {
 
 export async function createFinanceCheckTask(payload: {
   fileName: string
-  contentBase64: string
+  content: Buffer
+  rowConcurrency: number
 }): Promise<{ taskId: string; taskStatus: FinanceCheckTaskStatus }> {
   await ensureStore()
   if (extname(payload.fileName).toLowerCase() !== '.xlsx') throw new Error('仅支持 .xlsx 文件')
-  const content = Buffer.from(payload.contentBase64, 'base64')
-  await validateFinanceCheckUpload(content)
 
   const id = nanoid()
   const dir = taskDir(id)
   await mkdir(dir, { recursive: true })
   const safeName = basename(payload.fileName).replace(/[\\/:*?"<>|]/g, '_')
   const sourcePath = join(dir, safeName)
-  await writeFile(sourcePath, content)
+  await writeFile(sourcePath, payload.content)
   await writeJson(itemPath(id), [])
 
   const task: StoredTask = {
@@ -323,6 +327,7 @@ export async function createFinanceCheckTask(payload: {
     sourcePath,
     sheetName: null,
     tolerance: FINANCE_CHECK_TOLERANCE,
+    rowConcurrency: payload.rowConcurrency,
     summary: null,
     totalRows: null,
     processedRows: null,
@@ -412,5 +417,21 @@ export async function sendFinanceCheckDownload(ctx: Context, taskId: string): Pr
   ctx.attachment(task.resultFileName)
   ctx.type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
   ctx.body = createReadStream(task.resultPath)
+  return true
+}
+
+export async function openFinanceCheckSourceFile(taskId: string): Promise<boolean> {
+  const store = await readStore()
+  const task = store.tasks.find((item) => item.id === taskId)
+  if (!task?.sourcePath) return false
+  try {
+    const sourceStat = await stat(task.sourcePath)
+    if (!sourceStat.isFile()) return false
+  } catch {
+    return false
+  }
+
+  const error = await shell.openPath(task.sourcePath)
+  if (error) throw new Error(error)
   return true
 }

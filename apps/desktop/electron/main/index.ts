@@ -5,14 +5,17 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { get as httpGet } from 'node:http'
 import { get as httpsGet } from 'node:https'
 import { homedir } from 'node:os'
+import { buffer as readStreamBuffer } from 'node:stream/consumers'
 import { fileURLToPath } from 'node:url'
 import { execSync } from 'node:child_process'
 import path from 'node:path'
 import Koa from 'koa'
+import type { Context } from 'koa'
 import Router from '@koa/router'
 import bodyParser from 'koa-bodyparser'
 import { recognizeText, setDefaultOcrRuntime } from './ocr/service'
 import type { OcrModelVariant } from './ocr/config'
+import { FINANCE_CHECK_ROW_CONCURRENCY } from './finance-checker/constants'
 import {
   cancelFinanceCheckTask,
   createFinanceCheckTask,
@@ -20,6 +23,7 @@ import {
   getFinanceCheckTask,
   listFinanceCheckItems,
   listFinanceCheckTasks,
+  openFinanceCheckSourceFile,
   sendFinanceCheckDownload,
   type FinanceCheckTaskStatus,
 } from './finance-checker/service'
@@ -108,6 +112,84 @@ const SERVER_MODEL_FILES = [
 type AppConfig = {
   modelRoot: string
   variant: OcrModelVariant
+  financeCheckRowConcurrency: number
+}
+
+function normalizeFinanceCheckRowConcurrency(value: unknown): number {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return FINANCE_CHECK_ROW_CONCURRENCY
+  return Math.max(1, Math.min(20, Math.round(numeric)))
+}
+
+type MultipartUpload = {
+  fields: Record<string, string>
+  file: {
+    fileName: string
+    content: Buffer
+  } | null
+}
+
+function parseContentDisposition(value: string): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const part of value.split(';')) {
+    const [rawKey, ...rawValue] = part.trim().split('=')
+    if (!rawKey || rawValue.length === 0) continue
+    result[rawKey] = rawValue.join('=').replace(/^"|"$/g, '')
+  }
+  return result
+}
+
+async function parseMultipartUpload(ctx: Context): Promise<MultipartUpload> {
+  const contentType = ctx.get('content-type')
+  const boundaryMatch = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType)
+  const boundary = boundaryMatch?.[1] ?? boundaryMatch?.[2]
+  if (!boundary) throw new Error('上传表单缺少 boundary')
+
+  const body = await readStreamBuffer(ctx.req)
+  const boundaryBuffer = Buffer.from(`--${boundary}`)
+  const headerSeparator = Buffer.from('\r\n\r\n')
+  const fields: Record<string, string> = {}
+  let file: MultipartUpload['file'] = null
+  let cursor = 0
+
+  while (true) {
+    const boundaryStart = body.indexOf(boundaryBuffer, cursor)
+    if (boundaryStart < 0) break
+    let partStart = boundaryStart + boundaryBuffer.length
+    if (body.subarray(partStart, partStart + 2).toString('latin1') === '--') break
+    if (body.subarray(partStart, partStart + 2).toString('latin1') === '\r\n') partStart += 2
+
+    const nextBoundary = body.indexOf(boundaryBuffer, partStart)
+    if (nextBoundary < 0) break
+    let partEnd = nextBoundary
+    if (body.subarray(partEnd - 2, partEnd).toString('latin1') === '\r\n') partEnd -= 2
+
+    const part = body.subarray(partStart, partEnd)
+    const headerEnd = part.indexOf(headerSeparator)
+    if (headerEnd >= 0) {
+      const rawHeaders = part.subarray(0, headerEnd).toString('utf8')
+      const content = part.subarray(headerEnd + headerSeparator.length)
+      const dispositionLine = rawHeaders
+        .split(/\r\n/)
+        .find((line) => line.toLowerCase().startsWith('content-disposition:'))
+      const disposition = dispositionLine
+        ? parseContentDisposition(dispositionLine.slice(dispositionLine.indexOf(':') + 1))
+        : {}
+      const name = disposition.name
+      if (name === 'file') {
+        file = {
+          fileName: disposition.filename || 'upload.xlsx',
+          content: Buffer.from(content),
+        }
+      } else if (name) {
+        fields[name] = content.toString('utf8')
+      }
+    }
+
+    cursor = nextBoundary
+  }
+
+  return { fields, file }
 }
 
 async function logRendererState(label: string) {
@@ -131,6 +213,7 @@ function normalizeAppConfig(value: unknown): AppConfig {
   return {
     modelRoot: typeof config?.modelRoot === 'string' ? config.modelRoot : '',
     variant: config?.variant === 'mobile' || config?.variant === 'server' ? config.variant : 'server',
+    financeCheckRowConcurrency: normalizeFinanceCheckRowConcurrency(config?.financeCheckRowConcurrency),
   }
 }
 
@@ -138,7 +221,11 @@ async function readAppConfig(): Promise<AppConfig> {
   try {
     return normalizeAppConfig(JSON.parse(await readFile(CONFIG_PATH, 'utf-8')))
   } catch {
-    return { modelRoot: '', variant: 'server' }
+    return {
+      modelRoot: '',
+      variant: 'server',
+      financeCheckRowConcurrency: FINANCE_CHECK_ROW_CONCURRENCY,
+    }
   }
 }
 
@@ -242,7 +329,12 @@ async function downloadServerModel() {
     await downloadFile(`${SERVER_MODEL_BASE_URL}/${fileName}`, path.join(SERVER_MODEL_DIR, fileName))
   }
 
-  await saveAppConfig({ modelRoot: DEFAULT_MODEL_ROOT, variant: 'server' })
+  const config = await readAppConfig()
+  await saveAppConfig({
+    ...config,
+    modelRoot: DEFAULT_MODEL_ROOT,
+    variant: 'server',
+  })
   return getServerModelFileStatus()
 }
 
@@ -381,6 +473,7 @@ function createHttpServer() {
     const config = await saveAppConfig({
       modelRoot: typeof body.modelRoot === 'string' ? body.modelRoot.trim() : '',
       variant: body.variant === 'mobile' || body.variant === 'server' ? body.variant : 'server',
+      financeCheckRowConcurrency: normalizeFinanceCheckRowConcurrency(body.financeCheckRowConcurrency),
     })
     ctx.body = {
       code: 0,
@@ -414,34 +507,33 @@ function createHttpServer() {
   })
 
   router.post('/api/finance-check/tasks', async (ctx) => {
-    const body = ctx.request.body as {
-      fileName?: string
-      contentBase64?: string
-      modelRoot?: string
-      variant?: OcrModelVariant
-    }
-    if (!body.fileName || !body.contentBase64) {
+    const upload = await parseMultipartUpload(ctx)
+    const modelRoot = upload.fields.modelRoot?.trim()
+    const variant = upload.fields.variant as OcrModelVariant | undefined
+    const rowConcurrency = normalizeFinanceCheckRowConcurrency(upload.fields.rowConcurrency)
+
+    if (!upload.file) {
       ctx.status = 400
       ctx.body = { code: -1, message: '请上传 Excel 文件' }
       return
     }
-    const modelRoot = body.modelRoot?.trim()
     if (!modelRoot) {
       ctx.status = 400
       ctx.body = { code: -1, message: '请先在设置中配置 paddleocr-js-onnx 路径' }
       return
     }
-    if (body.variant !== 'mobile' && body.variant !== 'server') {
+    if (variant !== 'mobile' && variant !== 'server') {
       ctx.status = 400
       ctx.body = { code: -1, message: '模型类型无效，请选择 mobile 或 server' }
       return
     }
-    setDefaultOcrRuntime({ modelRoot, variant: body.variant })
+    setDefaultOcrRuntime({ modelRoot, variant })
     ctx.body = {
       code: 0,
       data: await createFinanceCheckTask({
-        fileName: body.fileName,
-        contentBase64: body.contentBase64,
+        fileName: upload.file.fileName,
+        content: upload.file.content,
+        rowConcurrency,
       }),
     }
   })
@@ -474,6 +566,16 @@ function createHttpServer() {
     if (!ok) {
       ctx.status = 404
       ctx.body = { code: -1, message: '任务不存在' }
+      return
+    }
+    ctx.body = { code: 0, data: { ok: true } }
+  })
+
+  router.post('/api/finance-check/tasks/:taskId/open-source', async (ctx) => {
+    const ok = await openFinanceCheckSourceFile(ctx.params.taskId)
+    if (!ok) {
+      ctx.status = 404
+      ctx.body = { code: -1, message: '原始文件不存在' }
       return
     }
     ctx.body = { code: 0, data: { ok: true } }

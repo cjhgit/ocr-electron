@@ -63,3 +63,5 @@ appImage:
 npmRebuild: true
 publish:
   provider: github
+  owner: cjhgit
+  repo: ocr-electron

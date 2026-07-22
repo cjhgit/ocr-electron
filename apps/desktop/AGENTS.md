@@ -1,0 +1,3 @@
+- 使用 pnpm workspace
+- 插件的功能实现参考 ztools（/Users/yunser/app/ZTools）
+- 除非我提及，不允许擅自提交代码

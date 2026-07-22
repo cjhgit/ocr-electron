@@ -1,0 +1,10 @@
+{
+  "name": "chat-electron-workspace",
+  "private": true,
+  "packageManager": "pnpm@9.12.2",
+  "scripts": {
+    "dev": "pnpm --filter flow-chat dev",
+    "build": "pnpm --filter remend build && pnpm --filter streamdown build && pnpm --filter flow-chat build",
+    "preview": "pnpm --filter flow-chat preview"
+  }
+}

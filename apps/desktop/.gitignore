@@ -1,0 +1,8 @@
+node_modules
+dist
+out
+.DS_Store
+.eslintcache
+*.log*
+data/external-plugins.json
+rest-client/test.http

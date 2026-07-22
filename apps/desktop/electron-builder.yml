@@ -1,6 +1,6 @@
 appId: com.yunser.chat.electron
-productName: Flow Chat
 asar: true
+productName: 财务助手
 directories:
   buildResources: build
   output: release/${version}
@@ -22,7 +22,7 @@ files:
 asarUnpack:
   - resources/**
 win:
-  executableName: Flow Chat
+  executableName: 财务助手
   target:
     - target: nsis
       arch:

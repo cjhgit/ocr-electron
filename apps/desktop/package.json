@@ -1,9 +1,9 @@
 {
   "name": "flow-chat",
-  "productName": "Flow Chat",
+  "productName": "财务助手",
   "version": "26.722.5",
   "main": "out/main/index.js",
-  "description": "Flow Chat",
+  "description": "财务助手",
   "author": "Yunser",
   "license": "MIT",
   "private": true,

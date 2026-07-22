@@ -1,6 +1,6 @@
 # Windows 运行问题说明
 
-本文档记录 Flow Chat（Electron 桌面端）在 Windows 上常见启动/渲染问题及排查方式。
+本文档记录财务助手（Electron 桌面端）在 Windows 上常见启动/渲染问题及排查方式。
 
 相关代码位于 `apps/desktop/electron/main/index.ts`。
 

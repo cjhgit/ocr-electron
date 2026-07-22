@@ -644,7 +644,7 @@ async function createWindow() {
   const { width, height } = screen.getPrimaryDisplay().workAreaSize
 
   win = new BrowserWindow({
-    title: 'Flow Chat',
+    title: '财务助手',
     icon: path.join(process.env.VITE_PUBLIC, 'favicon.ico'),
     width,
     height,

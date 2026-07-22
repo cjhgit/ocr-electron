@@ -14,7 +14,7 @@ import type { Context } from 'koa'
 import Router from '@koa/router'
 import bodyParser from 'koa-bodyparser'
 import { recognizeText, setDefaultOcrRuntime } from './ocr/service'
-import type { OcrModelVariant } from './ocr/config'
+import { getModelAsset, isOcrModelVariant, type OcrModelVariant } from './ocr/config'
 import { FINANCE_CHECK_ROW_CONCURRENCY } from './finance-checker/constants'
 import {
   cancelFinanceCheckTask,
@@ -102,13 +102,7 @@ const indexHtml = path.join(RENDERER_DIST, 'index.html')
 const CONFIG_DIR = path.join(homedir(), '.finance-checker')
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json')
 const DEFAULT_MODEL_ROOT = path.join(CONFIG_DIR, 'paddleocr-js-onnx')
-const SERVER_MODEL_DIR = path.join(DEFAULT_MODEL_ROOT, 'ppocr_v5_server')
-const SERVER_MODEL_BASE_URL = 'https://ai-html.obs.cn-south-1.myhuaweicloud.com:443/paddleocr-js-onnx/ppocr_v5_server'
-const SERVER_MODEL_FILES = [
-  'ppocrv5_dict.txt',
-  'PP-OCRv5_server_det_infer.onnx',
-  'PP-OCRv5_server_rec_infer.onnx',
-]
+const MODEL_BASE_URL = 'https://ai-html.obs.cn-south-1.myhuaweicloud.com:443/paddleocr-js-onnx'
 
 type AppConfig = {
   modelRoot: string
@@ -213,7 +207,7 @@ function normalizeAppConfig(value: unknown): AppConfig {
   const config = value as Partial<AppConfig> | null
   return {
     modelRoot: typeof config?.modelRoot === 'string' ? config.modelRoot : '',
-    variant: config?.variant === 'mobile' || config?.variant === 'server' ? config.variant : 'server',
+    variant: isOcrModelVariant(config?.variant) ? config.variant : 'server',
     financeCheckRowConcurrency: normalizeFinanceCheckRowConcurrency(config?.financeCheckRowConcurrency),
   }
 }
@@ -245,11 +239,14 @@ async function openConfigFolder(): Promise<void> {
   }
 }
 
-async function getServerModelFileStatus() {
+async function getServerModelFileStatus(variant: OcrModelVariant) {
+  const asset = getModelAsset(variant)
+  const modelDir = path.join(DEFAULT_MODEL_ROOT, asset.dir)
+  const modelFiles = [asset.dict, asset.det, asset.rec]
   const files = await Promise.all(
-    SERVER_MODEL_FILES.map(async (fileName) => {
+    modelFiles.map(async (fileName) => {
       try {
-        const fileStat = await stat(path.join(SERVER_MODEL_DIR, fileName))
+        const fileStat = await stat(path.join(modelDir, fileName))
         return {
           fileName,
           exists: fileStat.isFile() && fileStat.size > 0,
@@ -267,7 +264,7 @@ async function getServerModelFileStatus() {
 
   return {
     modelRoot: DEFAULT_MODEL_ROOT,
-    modelDir: SERVER_MODEL_DIR,
+    modelDir,
     files,
     ready: files.every((file) => file.exists),
   }
@@ -323,20 +320,23 @@ async function downloadFile(url: string, destination: string, redirectCount = 0)
   await rename(tempDestination, destination)
 }
 
-async function downloadServerModel() {
-  await mkdir(SERVER_MODEL_DIR, { recursive: true })
+async function downloadServerModel(variant: OcrModelVariant) {
+  const asset = getModelAsset(variant)
+  const modelDir = path.join(DEFAULT_MODEL_ROOT, asset.dir)
+  const modelFiles = [asset.dict, asset.det, asset.rec]
+  await mkdir(modelDir, { recursive: true })
 
-  for (const fileName of SERVER_MODEL_FILES) {
-    await downloadFile(`${SERVER_MODEL_BASE_URL}/${fileName}`, path.join(SERVER_MODEL_DIR, fileName))
+  for (const fileName of modelFiles) {
+    await downloadFile(`${MODEL_BASE_URL}/${asset.dir}/${fileName}`, path.join(modelDir, fileName))
   }
 
   const config = await readAppConfig()
   await saveAppConfig({
     ...config,
     modelRoot: DEFAULT_MODEL_ROOT,
-    variant: 'server',
+    variant,
   })
-  return getServerModelFileStatus()
+  return getServerModelFileStatus(variant)
 }
 
 function createHttpServer() {
@@ -399,9 +399,9 @@ function createHttpServer() {
       return
     }
 
-    if (variant !== 'mobile' && variant !== 'server') {
+    if (!isOcrModelVariant(variant)) {
       ctx.status = 400
-      ctx.body = { code: -1, message: '模型类型无效，请选择 mobile 或 server' }
+      ctx.body = { code: -1, message: '模型类型无效，请选择 server、v6_small 或 v6_medium' }
       return
     }
 
@@ -445,16 +445,19 @@ function createHttpServer() {
   })
 
   router.get('/api/ocr/server-model', async (ctx) => {
+    const variant = isOcrModelVariant(ctx.query.variant) ? ctx.query.variant : 'server'
     ctx.body = {
       code: 0,
-      data: await getServerModelFileStatus(),
+      data: await getServerModelFileStatus(variant),
     }
   })
 
   router.post('/api/ocr/server-model/download', async (ctx) => {
+    const body = ctx.request.body as { variant?: OcrModelVariant }
+    const variant = isOcrModelVariant(body.variant) ? body.variant : 'server'
     ctx.body = {
       code: 0,
-      data: await downloadServerModel(),
+      data: await downloadServerModel(variant),
     }
   })
 
@@ -473,7 +476,7 @@ function createHttpServer() {
     const body = ctx.request.body as Partial<AppConfig>
     const config = await saveAppConfig({
       modelRoot: typeof body.modelRoot === 'string' ? body.modelRoot.trim() : '',
-      variant: body.variant === 'mobile' || body.variant === 'server' ? body.variant : 'server',
+      variant: isOcrModelVariant(body.variant) ? body.variant : 'server',
       financeCheckRowConcurrency: normalizeFinanceCheckRowConcurrency(body.financeCheckRowConcurrency),
     })
     ctx.body = {
@@ -523,9 +526,9 @@ function createHttpServer() {
       ctx.body = { code: -1, message: '请先在设置中配置 paddleocr-js-onnx 路径' }
       return
     }
-    if (variant !== 'mobile' && variant !== 'server') {
+    if (!isOcrModelVariant(variant)) {
       ctx.status = 400
-      ctx.body = { code: -1, message: '模型类型无效，请选择 mobile 或 server' }
+      ctx.body = { code: -1, message: '模型类型无效，请选择 server、v6_small 或 v6_medium' }
       return
     }
     setDefaultOcrRuntime({ modelRoot, variant })

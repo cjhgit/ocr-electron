@@ -79,7 +79,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export async function uploadFinanceCheckTask(payload: {
   file: File
   modelRoot: string
-  variant: 'mobile' | 'server'
+  variant: 'server' | 'v6_small' | 'v6_medium'
   rowConcurrency: number
 }) {
   const formData = new FormData()

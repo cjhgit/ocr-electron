@@ -1,6 +1,6 @@
 const OCR_API_BASE = 'http://localhost:38765'
 
-export type OcrModelVariant = 'mobile' | 'server'
+export type OcrModelVariant = 'server' | 'v6_small' | 'v6_medium'
 
 export type OcrRecognizeRequest = {
   modelRoot: string
@@ -123,14 +123,19 @@ async function parseApiResponse<T>(response: Response, fallbackMessage: string):
   return result.data
 }
 
-export async function fetchServerModelInfo(): Promise<OcrServerModelInfo> {
-  const response = await fetch(`${OCR_API_BASE}/api/ocr/server-model`)
+export async function fetchServerModelInfo(variant: OcrModelVariant): Promise<OcrServerModelInfo> {
+  const query = new URLSearchParams({ variant })
+  const response = await fetch(`${OCR_API_BASE}/api/ocr/server-model?${query}`)
   return parseApiResponse<OcrServerModelInfo>(response, '获取模型状态失败')
 }
 
-export async function downloadServerModel(): Promise<OcrServerModelInfo> {
+export async function downloadServerModel(variant: OcrModelVariant): Promise<OcrServerModelInfo> {
   const response = await fetch(`${OCR_API_BASE}/api/ocr/server-model/download`, {
     method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ variant }),
   })
   return parseApiResponse<OcrServerModelInfo>(response, '下载模型失败')
 }

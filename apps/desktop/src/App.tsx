@@ -291,7 +291,7 @@ function OcrSettings({
   async function refreshModelInfo() {
     setModelStatusLoading(true)
     try {
-      const info = await fetchServerModelInfo()
+      const info = await fetchServerModelInfo(variant)
       setModelInfo(info)
       onModelInfoChange(info)
     } catch (err) {
@@ -313,16 +313,16 @@ function OcrSettings({
 
   useEffect(() => {
     void refreshModelInfo()
-  }, [])
+  }, [variant])
 
   async function handleDownloadModel() {
     setModelDownloading(true)
     setError('')
     try {
-      const info = await downloadServerModel()
+      const info = await downloadServerModel(variant)
       setModelInfo(info)
       onModelInfoChange(info)
-      onConfigChange(info.modelRoot, 'server', financeCheckRowConcurrency)
+      onConfigChange(info.modelRoot, variant, financeCheckRowConcurrency)
     } catch (err) {
       setError(err instanceof Error ? err.message : '下载模型失败')
     } finally {
@@ -389,10 +389,10 @@ function OcrSettings({
           <Card>
             <CardHeader>
               <CardTitle>模型配置</CardTitle>
-              {modelInfo && <CardDescription>server 模型目录：{modelInfo.modelDir}</CardDescription>}
+              {modelInfo && <CardDescription>模型目录：{modelInfo.modelDir}</CardDescription>}
               <CardAction>
                 <Button type="button" variant="outline" onClick={() => void handleDownloadModel()} disabled={modelDownloading}>
-                  <Download size={16} />{modelDownloading ? '下载中...' : modelInfo?.ready ? '重新下载 server 模型' : '下载 server 模型'}
+                  <Download size={16} />{modelDownloading ? '下载中...' : modelInfo?.ready ? '重新下载当前模型' : '下载当前模型'}
                 </Button>
               </CardAction>
             </CardHeader>
@@ -403,9 +403,10 @@ function OcrSettings({
             </label>
             <label className={fieldClass}>
               <span>模型类型</span>
-              <NativeSelect value={variant} onChange={(event) => onVariantChange(event.target.value as OcrModelVariant)} disabled className="w-full">
+              <NativeSelect value={variant} onChange={(event) => onVariantChange(event.target.value as OcrModelVariant)} className="w-full">
                 <NativeSelectOption value="server">server（高精度）</NativeSelectOption>
-                <NativeSelectOption value="mobile">mobile（轻量）</NativeSelectOption>
+                <NativeSelectOption value="v6_small">v6_small</NativeSelectOption>
+                <NativeSelectOption value="v6_medium">v6_medium</NativeSelectOption>
               </NativeSelect>
             </label>
             <label className={fieldClass}>
@@ -963,10 +964,8 @@ function App() {
   useEffect(() => {
     async function loadConfig() {
       try {
-        const [config, info] = await Promise.all([
-          fetchAppConfig(),
-          fetchServerModelInfo(),
-        ])
+        const config = await fetchAppConfig()
+        const info = await fetchServerModelInfo(config.variant)
         setModelRoot(config.modelRoot)
         setVariant(config.variant)
         setFinanceCheckRowConcurrency(config.financeCheckRowConcurrency)

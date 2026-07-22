@@ -167,20 +167,6 @@ function assertRequiredHeaders(headerMap: Partial<Record<HeaderField, number>>, 
   }
 }
 
-function collectUploadRowIssues(rows: RowRecord[]): string[] {
-  const issues: string[] = []
-  for (const row of rows) {
-    if (row.isSummaryRow) continue
-    const missing: string[] = []
-    if (!row.couponCode) missing.push(HEADER_FIELD_LABELS.couponCode)
-    if (!row.paymentImageId) missing.push(HEADER_FIELD_LABELS.paymentImage)
-    if (row.expectedMerchantAmount == null) missing.push(HEADER_FIELD_LABELS.expectedMerchantAmount)
-    if (!row.merchantImageId) missing.push(HEADER_FIELD_LABELS.merchantImage)
-    if (missing.length > 0) issues.push(`第 ${row.rowNumber} 行缺少：${missing.join('、')}`)
-  }
-  return issues
-}
-
 export async function validateFinanceCheckUpload(buffer: Buffer, sheetName?: string): Promise<void> {
   const workbook = await readWorkbook({ buffer })
   const worksheet = getWorksheet(workbook, sheetName)
@@ -188,12 +174,6 @@ export async function validateFinanceCheckUpload(buffer: Buffer, sheetName?: str
   assertRequiredHeaders(headerMap, FINANCE_CHECK_UPLOAD_REQUIRED_FIELDS)
   const dataRows = rows.filter((row) => !row.isSummaryRow)
   if (dataRows.length === 0) throw new Error('表格中没有可对账的数据行')
-  const issues = collectUploadRowIssues(rows)
-  if (issues.length > 0) {
-    const preview = issues.slice(0, 10)
-    const suffix = issues.length > 10 ? `\n...共 ${issues.length} 行存在问题` : ''
-    throw new Error(`表格数据不完整：\n${preview.join('\n')}${suffix}`)
-  }
 }
 
 export async function loadRows(xlsxPath: string, sheetName?: string): Promise<RowRecord[]> {

@@ -106,11 +106,22 @@ function StatusBadge({ status }: { status: FinanceCheckTaskStatus | FinanceCheck
   return <span className={`badge badge-${status}`}>{status in TASK_STATUS_LABEL ? TASK_STATUS_LABEL[status as FinanceCheckTaskStatus] : RESULT_STATUS_LABEL[status as FinanceCheckResultStatus]}</span>
 }
 
+function SummaryCount({ value, tone }: { value: number; tone: 'pass' | 'fail' }) {
+  if (value <= 0) return <>{value}</>
+  return <span className={`summary-count summary-count-${tone}`}>{value}</span>
+}
+
 function SummaryText({ task }: { task: FinanceCheckTask }) {
   if (!task.summary) return <span className="muted">-</span>
   return (
     <span className="summary-text">
-      通过 {task.summary.pass} / 不通过 {task.summary.fail} / 跳过 {task.summary.skip} / 异常 {task.summary.error}
+      通过 <SummaryCount value={task.summary.pass} tone="pass" />
+      {' / '}
+      不通过 <SummaryCount value={task.summary.fail} tone="fail" />
+      {' / '}
+      跳过 <SummaryCount value={task.summary.skip} tone="fail" />
+      {' / '}
+      异常 <SummaryCount value={task.summary.error} tone="fail" />
     </span>
   )
 }

@@ -399,6 +399,18 @@ button:disabled,
   font-size: 12px;
 }
 
+.summary-count {
+  font-weight: 600;
+}
+
+.summary-count-pass {
+  color: #15803d;
+}
+
+.summary-count-fail {
+  color: #dc2626;
+}
+
 .table-wrap {
   overflow: auto;
   border: 1px solid #e5e7eb;

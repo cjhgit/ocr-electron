@@ -6,8 +6,18 @@ import path from 'node:path'
 import Koa from 'koa'
 import Router from '@koa/router'
 import bodyParser from 'koa-bodyparser'
-import { recognizeText } from './ocr/service'
+import { recognizeText, setDefaultOcrRuntime } from './ocr/service'
 import type { OcrModelVariant } from './ocr/config'
+import {
+  cancelFinanceCheckTask,
+  createFinanceCheckTask,
+  deleteFinanceCheckTask,
+  getFinanceCheckTask,
+  listFinanceCheckItems,
+  listFinanceCheckTasks,
+  sendFinanceCheckDownload,
+  type FinanceCheckTaskStatus,
+} from './finance-checker/service'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -192,6 +202,103 @@ function createHttpServer() {
       data: {
         text: result.text,
       },
+    }
+  })
+
+  router.get('/api/finance-check/tasks', async (ctx) => {
+    const query = ctx.query as Record<string, string | undefined>
+    const taskStatus = query.taskStatus as FinanceCheckTaskStatus | undefined
+    ctx.body = {
+      code: 0,
+      data: await listFinanceCheckTasks({
+        page: Number(query.page ?? 1),
+        pageSize: Number(query.pageSize ?? 10),
+        taskStatus,
+      }),
+    }
+  })
+
+  router.post('/api/finance-check/tasks', async (ctx) => {
+    const body = ctx.request.body as {
+      fileName?: string
+      contentBase64?: string
+      modelRoot?: string
+      variant?: OcrModelVariant
+    }
+    if (!body.fileName || !body.contentBase64) {
+      ctx.status = 400
+      ctx.body = { code: -1, message: '请上传 Excel 文件' }
+      return
+    }
+    const modelRoot = body.modelRoot?.trim()
+    if (!modelRoot) {
+      ctx.status = 400
+      ctx.body = { code: -1, message: '请先在设置中配置 paddleocr-js-onnx 路径' }
+      return
+    }
+    if (body.variant !== 'mobile' && body.variant !== 'server') {
+      ctx.status = 400
+      ctx.body = { code: -1, message: '模型类型无效，请选择 mobile 或 server' }
+      return
+    }
+    setDefaultOcrRuntime({ modelRoot, variant: body.variant })
+    ctx.body = {
+      code: 0,
+      data: await createFinanceCheckTask({
+        fileName: body.fileName,
+        contentBase64: body.contentBase64,
+      }),
+    }
+  })
+
+  router.get('/api/finance-check/tasks/:taskId', async (ctx) => {
+    const task = await getFinanceCheckTask(ctx.params.taskId)
+    if (!task) {
+      ctx.status = 404
+      ctx.body = { code: -1, message: '任务不存在' }
+      return
+    }
+    ctx.body = { code: 0, data: task }
+  })
+
+  router.get('/api/finance-check/tasks/:taskId/items', async (ctx) => {
+    const query = ctx.query as Record<string, string | undefined>
+    ctx.body = {
+      code: 0,
+      data: await listFinanceCheckItems({
+        taskId: ctx.params.taskId,
+        page: Number(query.page ?? 1),
+        pageSize: Number(query.pageSize ?? 50),
+        overallStatus: query.overallStatus as never,
+      }),
+    }
+  })
+
+  router.post('/api/finance-check/tasks/:taskId/cancel', async (ctx) => {
+    const ok = await cancelFinanceCheckTask(ctx.params.taskId)
+    if (!ok) {
+      ctx.status = 404
+      ctx.body = { code: -1, message: '任务不存在' }
+      return
+    }
+    ctx.body = { code: 0, data: { ok: true } }
+  })
+
+  router.delete('/api/finance-check/tasks/:taskId', async (ctx) => {
+    const ok = await deleteFinanceCheckTask(ctx.params.taskId)
+    if (!ok) {
+      ctx.status = 400
+      ctx.body = { code: -1, message: '任务不存在或正在执行中' }
+      return
+    }
+    ctx.body = { code: 0, data: { ok: true } }
+  })
+
+  router.get('/api/finance-check/tasks/:taskId/download', async (ctx) => {
+    const ok = await sendFinanceCheckDownload(ctx, ctx.params.taskId)
+    if (!ok) {
+      ctx.status = 404
+      ctx.body = { code: -1, message: '结果文件不存在' }
     }
   })
 

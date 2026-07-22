@@ -1,0 +1,398 @@
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { basename, extname, join } from 'node:path'
+import { homedir } from 'node:os'
+import { nanoid } from 'nanoid'
+import type { Context } from 'koa'
+import { recognizeImageFromPath } from '../ocr/service'
+import { FINANCE_CHECK_MAX_FILE_SIZE_BYTES, FINANCE_CHECK_TOLERANCE } from './constants'
+import { validateFinanceCheckUpload } from './excel-reader'
+import { auditOutputFilename, writeAuditWorkbook } from './excel-writer'
+import {
+  FinanceChecker,
+  FinanceCheckCancelledError,
+  renderJsonReport,
+  type FinanceCheckJsonReport,
+} from './validator'
+import { overallStatus, type CheckStatus, type RowCheckResult } from './types'
+
+export type FinanceCheckTaskStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+
+export type FinanceCheckSummary = Record<CheckStatus, number>
+
+export type FinanceCheckTaskItem = {
+  id: string
+  rowNumber: number
+  pushDate: string | null
+  city: string | null
+  merchantName: string | null
+  pusher: string | null
+  couponCode: string | null
+  expectedPaidAmount: string | null
+  expectedMerchantAmount: string | null
+  remark: string | null
+  overallStatus: CheckStatus
+  paymentCheckStatus: CheckStatus | null
+  paymentExpected: string | null
+  paymentActual: string | null
+  paymentMessage: string | null
+  paymentCheckDetails: Record<string, unknown> | null
+  merchantCheckStatus: CheckStatus | null
+  merchantExpected: string | null
+  merchantActual: string | null
+  merchantMessage: string | null
+  merchantCheckDetails: Record<string, unknown> | null
+}
+
+export type FinanceCheckTask = {
+  id: string
+  taskStatus: FinanceCheckTaskStatus
+  sourceFileName: string
+  resultFileName: string | null
+  sheetName: string | null
+  tolerance: number
+  summary: FinanceCheckSummary | null
+  totalRows: number | null
+  processedRows: number | null
+  progressPercent: number | null
+  errorMessage: string | null
+  resultDownloadUrl: string | null
+  createdAt: string
+  startedAt: string | null
+  finishedAt: string | null
+  durationMs: number | null
+}
+
+type StoredTask = FinanceCheckTask & {
+  sourcePath: string
+  resultPath: string | null
+  cancelledRequested?: boolean
+}
+
+type StoreData = {
+  tasks: StoredTask[]
+}
+
+const DATA_DIR = join(homedir(), '.finance-checker')
+const TASKS_FILE = join(DATA_DIR, 'tasks.json')
+const FILES_DIR = join(DATA_DIR, 'files')
+
+let processing = false
+
+function nowIso(): string {
+  return new Date().toISOString()
+}
+
+function publicTask(task: StoredTask): FinanceCheckTask {
+  return {
+    id: task.id,
+    taskStatus: task.taskStatus,
+    sourceFileName: task.sourceFileName,
+    resultFileName: task.resultFileName,
+    sheetName: task.sheetName,
+    tolerance: task.tolerance,
+    summary: task.summary,
+    totalRows: task.totalRows,
+    processedRows: task.processedRows,
+    progressPercent: task.progressPercent,
+    errorMessage: task.errorMessage,
+    resultDownloadUrl: task.resultDownloadUrl,
+    createdAt: task.createdAt,
+    startedAt: task.startedAt,
+    finishedAt: task.finishedAt,
+    durationMs: task.durationMs,
+  }
+}
+
+async function ensureStore(): Promise<void> {
+  await mkdir(FILES_DIR, { recursive: true })
+  try {
+    await stat(TASKS_FILE)
+  } catch {
+    await writeJson(TASKS_FILE, { tasks: [] })
+  }
+}
+
+async function readJson<T>(path: string, fallback: T): Promise<T> {
+  try {
+    return JSON.parse(await readFile(path, 'utf8')) as T
+  } catch {
+    return fallback
+  }
+}
+
+async function writeJson(path: string, value: unknown): Promise<void> {
+  await mkdir(join(path, '..'), { recursive: true })
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+}
+
+async function readStore(): Promise<StoreData> {
+  await ensureStore()
+  return readJson<StoreData>(TASKS_FILE, { tasks: [] })
+}
+
+async function writeStore(store: StoreData): Promise<void> {
+  await writeJson(TASKS_FILE, store)
+}
+
+async function updateTask(taskId: string, updater: (task: StoredTask) => void): Promise<StoredTask | null> {
+  const store = await readStore()
+  const task = store.tasks.find((item) => item.id === taskId) ?? null
+  if (!task) return null
+  updater(task)
+  await writeStore(store)
+  return task
+}
+
+function itemPath(taskId: string): string {
+  return join(FILES_DIR, taskId, 'items.json')
+}
+
+function reportPath(taskId: string): string {
+  return join(FILES_DIR, taskId, 'debug-report.json')
+}
+
+function taskDir(taskId: string): string {
+  return join(FILES_DIR, taskId)
+}
+
+function stringifyAmount(value: number | null): string | null {
+  return value == null ? null : String(value)
+}
+
+function itemFromRowResult(taskId: string, rowResult: RowCheckResult): FinanceCheckTaskItem {
+  const payment = rowResult.paymentCheck
+  const merchant = rowResult.merchantCheck
+  return {
+    id: `${taskId}-${rowResult.row.rowNumber}`,
+    rowNumber: rowResult.row.rowNumber,
+    pushDate: rowResult.row.pushDate == null ? null : String(rowResult.row.pushDate),
+    city: rowResult.row.city,
+    merchantName: rowResult.row.merchantName,
+    pusher: rowResult.row.pusher,
+    couponCode: rowResult.row.couponCode,
+    expectedPaidAmount: stringifyAmount(rowResult.row.expectedPaidAmount),
+    expectedMerchantAmount: stringifyAmount(rowResult.row.expectedMerchantAmount),
+    remark: rowResult.row.remark,
+    overallStatus: overallStatus(rowResult),
+    paymentCheckStatus: payment?.status ?? null,
+    paymentExpected: stringifyAmount(payment?.expected ?? null),
+    paymentActual: stringifyAmount(payment?.actual ?? null),
+    paymentMessage: payment?.message ?? null,
+    paymentCheckDetails: payment?.details ?? null,
+    merchantCheckStatus: merchant?.status ?? null,
+    merchantExpected: stringifyAmount(merchant?.expected ?? null),
+    merchantActual: stringifyAmount(merchant?.actual ?? null),
+    merchantMessage: merchant?.message ?? null,
+    merchantCheckDetails: merchant?.details ?? null,
+  }
+}
+
+async function readItems(taskId: string): Promise<FinanceCheckTaskItem[]> {
+  return readJson<FinanceCheckTaskItem[]>(itemPath(taskId), [])
+}
+
+async function appendItem(taskId: string, item: FinanceCheckTaskItem): Promise<void> {
+  const items = await readItems(taskId)
+  const existingIndex = items.findIndex((entry) => entry.id === item.id)
+  if (existingIndex >= 0) items[existingIndex] = item
+  else items.push(item)
+  items.sort((a, b) => a.rowNumber - b.rowNumber)
+  await writeJson(itemPath(taskId), items)
+}
+
+async function runTask(task: StoredTask): Promise<void> {
+  const started = Date.now()
+  await updateTask(task.id, (current) => {
+    current.taskStatus = 'running'
+    current.startedAt = nowIso()
+    current.errorMessage = null
+  })
+
+  try {
+    const checker = new FinanceChecker({
+      tolerance: task.tolerance,
+      ocrRecognizeProvider: recognizeImageFromPath,
+    })
+    const result = await checker.checkWorkbookConcurrent(task.sourcePath, {
+      cacheDir: join(taskDir(task.id), '.cache'),
+      shouldCancel: async () => {
+        const store = await readStore()
+        return store.tasks.find((item) => item.id === task.id)?.cancelledRequested === true
+      },
+      onRowProcessed: async (processedRows, totalRows, rowResult) => {
+        await appendItem(task.id, itemFromRowResult(task.id, rowResult))
+        await updateTask(task.id, (current) => {
+          current.processedRows = processedRows
+          current.totalRows = totalRows
+          current.progressPercent = totalRows > 0 ? Math.round((processedRows / totalRows) * 100) : 0
+        })
+      },
+    })
+
+    for (const rowResult of result.rows) {
+      await appendItem(task.id, itemFromRowResult(task.id, rowResult))
+    }
+
+    const report: FinanceCheckJsonReport = renderJsonReport(result)
+    await writeJson(reportPath(task.id), report)
+    const resultFileName = auditOutputFilename(task.sourceFileName)
+    const resultPath = join(taskDir(task.id), resultFileName)
+    await writeAuditWorkbook(task.sourcePath, result, resultPath)
+
+    await updateTask(task.id, (current) => {
+      current.taskStatus = 'succeeded'
+      current.resultFileName = resultFileName
+      current.resultPath = resultPath
+      current.resultDownloadUrl = `http://localhost:38765/api/finance-check/tasks/${task.id}/download`
+      current.summary = report.summary
+      current.totalRows = result.rows.length
+      current.processedRows = result.rows.length
+      current.progressPercent = 100
+      current.finishedAt = nowIso()
+      current.durationMs = Date.now() - started
+    })
+  } catch (error) {
+    const isCancelled = error instanceof FinanceCheckCancelledError
+    await updateTask(task.id, (current) => {
+      current.taskStatus = isCancelled ? 'cancelled' : 'failed'
+      current.errorMessage = isCancelled ? null : error instanceof Error ? error.message : '对账失败'
+      current.finishedAt = nowIso()
+      current.durationMs = Date.now() - started
+    })
+  }
+}
+
+async function processQueue(): Promise<void> {
+  if (processing) return
+  processing = true
+  try {
+    while (true) {
+      const store = await readStore()
+      const nextTask = store.tasks.find((task) => task.taskStatus === 'pending')
+      if (!nextTask) break
+      await runTask(nextTask)
+    }
+  } finally {
+    processing = false
+  }
+}
+
+export async function createFinanceCheckTask(payload: {
+  fileName: string
+  contentBase64: string
+}): Promise<{ taskId: string; taskStatus: FinanceCheckTaskStatus }> {
+  await ensureStore()
+  if (extname(payload.fileName).toLowerCase() !== '.xlsx') throw new Error('仅支持 .xlsx 文件')
+  const content = Buffer.from(payload.contentBase64, 'base64')
+  if (content.byteLength > FINANCE_CHECK_MAX_FILE_SIZE_BYTES) throw new Error('文件不能超过 50MB')
+  await validateFinanceCheckUpload(content)
+
+  const id = nanoid()
+  const dir = taskDir(id)
+  await mkdir(dir, { recursive: true })
+  const safeName = basename(payload.fileName).replace(/[\\/:*?"<>|]/g, '_')
+  const sourcePath = join(dir, safeName)
+  await writeFile(sourcePath, content)
+  await writeJson(itemPath(id), [])
+
+  const task: StoredTask = {
+    id,
+    taskStatus: 'pending',
+    sourceFileName: safeName,
+    resultFileName: null,
+    resultPath: null,
+    sourcePath,
+    sheetName: null,
+    tolerance: FINANCE_CHECK_TOLERANCE,
+    summary: null,
+    totalRows: null,
+    processedRows: null,
+    progressPercent: 0,
+    errorMessage: null,
+    resultDownloadUrl: null,
+    createdAt: nowIso(),
+    startedAt: null,
+    finishedAt: null,
+    durationMs: null,
+  }
+
+  const store = await readStore()
+  store.tasks.unshift(task)
+  await writeStore(store)
+  void processQueue()
+  return { taskId: id, taskStatus: task.taskStatus }
+}
+
+export async function listFinanceCheckTasks(params: {
+  page?: number
+  pageSize?: number
+  taskStatus?: FinanceCheckTaskStatus
+}): Promise<{ items: FinanceCheckTask[]; total: number }> {
+  const store = await readStore()
+  const filtered = params.taskStatus
+    ? store.tasks.filter((task) => task.taskStatus === params.taskStatus)
+    : store.tasks
+  const page = Math.max(1, params.page ?? 1)
+  const pageSize = Math.max(1, params.pageSize ?? 10)
+  return {
+    items: filtered.slice((page - 1) * pageSize, page * pageSize).map(publicTask),
+    total: filtered.length,
+  }
+}
+
+export async function getFinanceCheckTask(taskId: string): Promise<FinanceCheckTask | null> {
+  const store = await readStore()
+  const task = store.tasks.find((item) => item.id === taskId)
+  return task ? publicTask(task) : null
+}
+
+export async function listFinanceCheckItems(params: {
+  taskId: string
+  page?: number
+  pageSize?: number
+  overallStatus?: CheckStatus
+}): Promise<{ items: FinanceCheckTaskItem[]; total: number }> {
+  const items = await readItems(params.taskId)
+  const filtered = params.overallStatus
+    ? items.filter((item) => item.overallStatus === params.overallStatus)
+    : items
+  const page = Math.max(1, params.page ?? 1)
+  const pageSize = Math.max(1, params.pageSize ?? 50)
+  return {
+    items: filtered.slice((page - 1) * pageSize, page * pageSize),
+    total: filtered.length,
+  }
+}
+
+export async function cancelFinanceCheckTask(taskId: string): Promise<boolean> {
+  const task = await updateTask(taskId, (current) => {
+    if (current.taskStatus === 'pending') {
+      current.taskStatus = 'cancelled'
+      current.finishedAt = nowIso()
+    } else if (current.taskStatus === 'running') {
+      current.cancelledRequested = true
+    }
+  })
+  return Boolean(task)
+}
+
+export async function deleteFinanceCheckTask(taskId: string): Promise<boolean> {
+  const store = await readStore()
+  const task = store.tasks.find((item) => item.id === taskId)
+  if (!task || task.taskStatus === 'running') return false
+  store.tasks = store.tasks.filter((item) => item.id !== taskId)
+  await writeStore(store)
+  await rm(taskDir(taskId), { recursive: true, force: true })
+  return true
+}
+
+export async function sendFinanceCheckDownload(ctx: Context, taskId: string): Promise<boolean> {
+  const store = await readStore()
+  const task = store.tasks.find((item) => item.id === taskId)
+  if (!task?.resultPath || !task.resultFileName) return false
+  ctx.attachment(task.resultFileName)
+  ctx.type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  ctx.body = createReadStream(task.resultPath)
+  return true
+}

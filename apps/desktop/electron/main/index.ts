@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, screen, shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { createWriteStream } from 'node:fs'
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
@@ -529,11 +529,13 @@ async function createWindow() {
     webPreferences.preload = preloadPath
   }
 
+  const { width, height } = screen.getPrimaryDisplay().workAreaSize
+
   win = new BrowserWindow({
     title: 'Flow Chat',
     icon: path.join(process.env.VITE_PUBLIC, 'favicon.ico'),
-    width: 800,
-    height: 600,
+    width,
+    height,
     backgroundColor: '#ffffff',
     webPreferences,
   })

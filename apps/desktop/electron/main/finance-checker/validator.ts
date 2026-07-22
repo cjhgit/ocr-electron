@@ -293,8 +293,8 @@ export class FinanceChecker {
     const ocrText = await this.getOcrText(imagePath)
     if (actual == null) {
       const message = isOrderNumberCode(row.couponCode)
-        ? `截图中未识别到订单号 ${row.couponCode} 的尾款实收`
-        : `截图中未识别到券码 ${row.couponCode}`
+        ? `实付券码截图中未识别到订单号 ${row.couponCode} 的尾款实收`
+        : `实付券码截图中未识别到券码 ${row.couponCode}`
       return {
         fieldName,
         status: CheckStatusKey.ERROR,
@@ -348,7 +348,7 @@ export class FinanceChecker {
         status: CheckStatusKey.ERROR,
         expected: row.expectedMerchantAmount,
         actual: null,
-        message: `截图中未识别到券码 ${row.couponCode} 对应的收益`,
+        message: `商家实收图中未识别到券码 ${row.couponCode} 对应的收益`,
         details: buildCheckDetails(imageName, imagePath, ocrText, 'merchant', {
           coupon_code: row.couponCode,
           recognized_order_ids: [...merchantMap.keys()],

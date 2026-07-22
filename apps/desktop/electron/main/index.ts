@@ -25,6 +25,7 @@ import {
   listFinanceCheckTasks,
   openFinanceCheckSourceFile,
   sendFinanceCheckDownload,
+  sendFinanceCheckImage,
   type FinanceCheckTaskStatus,
 } from './finance-checker/service'
 
@@ -596,6 +597,15 @@ function createHttpServer() {
     if (!ok) {
       ctx.status = 404
       ctx.body = { code: -1, message: '结果文件不存在' }
+    }
+  })
+
+  router.get('/api/finance-check/tasks/:taskId/image', async (ctx) => {
+    const query = ctx.query as Record<string, string | undefined>
+    const ok = await sendFinanceCheckImage(ctx, ctx.params.taskId, query.path ?? '')
+    if (!ok) {
+      ctx.status = 404
+      ctx.body = { code: -1, message: '图片不存在' }
     }
   })
 

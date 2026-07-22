@@ -15,6 +15,9 @@ import {
   Upload,
   XCircle,
 } from 'lucide-react'
+import Lightbox from 'yet-another-react-lightbox'
+import Zoom from 'yet-another-react-lightbox/plugins/zoom'
+import 'yet-another-react-lightbox/styles.css'
 import { Alert, AlertAction, AlertDescription, AlertTitle } from './components/ui/alert'
 import { Badge } from './components/ui/badge'
 import { Button, buttonVariants } from './components/ui/button'
@@ -43,6 +46,7 @@ import {
   fetchFinanceCheckTask,
   fetchFinanceCheckTaskItems,
   fetchFinanceCheckTasks,
+  financeCheckImageUrl,
   openFinanceCheckSourceFile,
   uploadFinanceCheckTask,
   type FinanceCheckResultStatus,
@@ -189,6 +193,33 @@ function ErrorMessageCell({ message }: { message: string | null }) {
     <span className="block max-w-50 truncate text-xs leading-snug text-destructive" title={message}>
       {message}
     </span>
+  )
+}
+
+function stringDetail(details: Record<string, unknown> | null, key: string): string | null {
+  const value = details?.[key]
+  return typeof value === 'string' && value.trim() ? value : null
+}
+
+function detailImageUrl(taskId: string, details: Record<string, unknown> | null): string | null {
+  const imagePath = stringDetail(details, 'imagePath') ?? stringDetail(details, 'image')
+  return imagePath ? financeCheckImageUrl(taskId, imagePath) : null
+}
+
+function ImageViewButton({
+  title,
+  imageUrl,
+  onOpen,
+}: {
+  title: string
+  imageUrl: string | null
+  onOpen: (target: { title: string; url: string }) => void
+}) {
+  if (!imageUrl) return <span className={mutedClass}>-</span>
+  return (
+    <Button type="button" variant="ghost" size="sm" onClick={() => onOpen({ title, url: imageUrl })}>
+      <Eye size={14} />查看
+    </Button>
   )
 }
 
@@ -727,6 +758,7 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
   const [itemPage, setItemPage] = useState(1)
   const [itemStatusFilter, setItemStatusFilter] = useState<FinanceCheckResultStatus | 'all'>('all')
   const [jsonTarget, setJsonTarget] = useState<{ title: string; details: Record<string, unknown> | null } | null>(null)
+  const [imageTarget, setImageTarget] = useState<{ title: string; url: string } | null>(null)
   const [error, setError] = useState('')
   const [nowMs, setNowMs] = useState(() => Date.now())
   const itemPageSize = 50
@@ -800,7 +832,7 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
         <CardContent className={cardStackClass}>
         {error && <p className={errorTextClass}>{error}</p>}
         {task && (
-          <div className="grid grid-cols-3 gap-3 max-lg:grid-cols-1">
+          <div className="grid grid-cols-2 gap-x-8 gap-y-3 text-sm max-lg:grid-cols-1">
             <Info label="原始文件" value={task.sourceFileName} />
             <Info label="原始文件路径" value={task.sourcePath} />
             <Info label="结果文件" value={task.resultFileName ?? '-'} />
@@ -834,12 +866,14 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead>核销券码</TableHead>
+                <TableHead>推单实付金额</TableHead>
+                <TableHead>实付券码</TableHead>
+                <TableHead>商家实收</TableHead>
+                <TableHead>商家实收图</TableHead>
                 <TableHead>行号</TableHead>
-                <TableHead>券码</TableHead>
                 <TableHead>城市</TableHead>
                 <TableHead>商户</TableHead>
-                <TableHead>应付金额</TableHead>
-                <TableHead>应结商户金额</TableHead>
                 <TableHead>结果</TableHead>
                 <TableHead>支付对账</TableHead>
                 <TableHead>商户对账</TableHead>
@@ -847,26 +881,44 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
               </TableRow>
             </TableHeader>
             <TableBody>
-              {items.map((item) => (
-                <TableRow key={item.id}>
-                  <TableCell>{item.rowNumber}</TableCell>
-                  <TableCell>{item.couponCode ?? '-'}</TableCell>
-                  <TableCell>{item.city ?? '-'}</TableCell>
-                  <TableCell className="max-w-45 truncate" title={item.merchantName ?? undefined}>{item.merchantName ?? '-'}</TableCell>
-                  <TableCell>{item.expectedPaidAmount ?? '-'}</TableCell>
-                  <TableCell>{item.expectedMerchantAmount ?? '-'}</TableCell>
-                  <TableCell><StatusBadge status={item.overallStatus} /></TableCell>
-                  <TableCell className="max-w-55 text-xs text-muted-foreground whitespace-normal">{item.paymentMessage ?? '-'}</TableCell>
-                  <TableCell className="max-w-55 text-xs text-muted-foreground whitespace-normal">{item.merchantMessage ?? '-'}</TableCell>
-                  <TableCell>
-                    <div className={rowActionsClass}>
-                      <Button type="button" variant="ghost" size="sm" disabled={!item.paymentCheckDetails} onClick={() => setJsonTarget({ title: `第 ${item.rowNumber} 行 · 支付截图`, details: item.paymentCheckDetails })}><ScanSearch size={14} />支付</Button>
-                      <Button type="button" variant="ghost" size="sm" disabled={!item.merchantCheckDetails} onClick={() => setJsonTarget({ title: `第 ${item.rowNumber} 行 · 商户截图`, details: item.merchantCheckDetails })}><ScanSearch size={14} />商户</Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {items.length === 0 && <TableRow><TableCell colSpan={10} className={emptyCellClass}>{task?.taskStatus === 'pending' || task?.taskStatus === 'running' ? '任务执行中，明细将陆续写入...' : '暂无明细数据'}</TableCell></TableRow>}
+              {items.map((item) => {
+                const paymentImageUrl = detailImageUrl(taskId, item.paymentCheckDetails)
+                const merchantImageUrl = detailImageUrl(taskId, item.merchantCheckDetails)
+                return (
+                  <TableRow key={item.id}>
+                    <TableCell>{item.couponCode ?? '-'}</TableCell>
+                    <TableCell>{item.expectedPaidAmount ?? '-'}</TableCell>
+                    <TableCell>
+                      <ImageViewButton
+                        title={`第 ${item.rowNumber} 行 · 实付券码`}
+                        imageUrl={paymentImageUrl}
+                        onOpen={setImageTarget}
+                      />
+                    </TableCell>
+                    <TableCell>{item.expectedMerchantAmount ?? '-'}</TableCell>
+                    <TableCell>
+                      <ImageViewButton
+                        title={`第 ${item.rowNumber} 行 · 商家实收图`}
+                        imageUrl={merchantImageUrl}
+                        onOpen={setImageTarget}
+                      />
+                    </TableCell>
+                    <TableCell>{item.rowNumber}</TableCell>
+                    <TableCell>{item.city ?? '-'}</TableCell>
+                    <TableCell className="max-w-45 truncate" title={item.merchantName ?? undefined}>{item.merchantName ?? '-'}</TableCell>
+                    <TableCell><StatusBadge status={item.overallStatus} /></TableCell>
+                    <TableCell className="max-w-55 text-xs text-muted-foreground whitespace-normal">{item.paymentMessage ?? '-'}</TableCell>
+                    <TableCell className="max-w-55 text-xs text-muted-foreground whitespace-normal">{item.merchantMessage ?? '-'}</TableCell>
+                    <TableCell>
+                      <div className={rowActionsClass}>
+                        <Button type="button" variant="ghost" size="sm" disabled={!item.paymentCheckDetails} onClick={() => setJsonTarget({ title: `第 ${item.rowNumber} 行 · 支付截图`, details: item.paymentCheckDetails })}><ScanSearch size={14} />支付</Button>
+                        <Button type="button" variant="ghost" size="sm" disabled={!item.merchantCheckDetails} onClick={() => setJsonTarget({ title: `第 ${item.rowNumber} 行 · 商户截图`, details: item.merchantCheckDetails })}><ScanSearch size={14} />商户</Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
+              {items.length === 0 && <TableRow><TableCell colSpan={12} className={emptyCellClass}>{task?.taskStatus === 'pending' || task?.taskStatus === 'running' ? '任务执行中，明细将陆续写入...' : '暂无明细数据'}</TableCell></TableRow>}
             </TableBody>
           </Table>
         </div>
@@ -878,15 +930,23 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
       </Card>
 
       {jsonTarget && <JsonModal title={jsonTarget.title} details={jsonTarget.details} onClose={() => setJsonTarget(null)} />}
+      <Lightbox
+        open={Boolean(imageTarget)}
+        close={() => setImageTarget(null)}
+        slides={imageTarget ? [{ src: imageTarget.url }] : []}
+        plugins={[Zoom]}
+        carousel={{ finite: true }}
+        zoom={{ maxZoomPixelRatio: 6, scrollToZoom: true }}
+      />
     </div>
   )
 }
 
 function Info({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex min-w-0 flex-col gap-1 rounded-lg border bg-muted p-3">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <strong className={cn(detailValueClass, '[overflow-wrap:anywhere]')}>{value}</strong>
+    <div className="grid min-w-0 grid-cols-[88px_minmax(0,1fr)] gap-3">
+      <span className="text-xs leading-6 text-muted-foreground">{label}</span>
+      <strong className={cn(detailValueClass, 'leading-6 [overflow-wrap:anywhere]')}>{value}</strong>
     </div>
   )
 }

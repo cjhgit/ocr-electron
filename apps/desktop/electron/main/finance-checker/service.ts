@@ -1,6 +1,6 @@
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
-import { basename, extname, join } from 'node:path'
+import { basename, extname, join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { shell } from 'electron'
 import { nanoid } from 'nanoid'
@@ -417,6 +417,46 @@ export async function sendFinanceCheckDownload(ctx: Context, taskId: string): Pr
   ctx.attachment(task.resultFileName)
   ctx.type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
   ctx.body = createReadStream(task.resultPath)
+  return true
+}
+
+function isInsideDir(filePath: string, dirPath: string): boolean {
+  const resolvedFile = resolve(filePath)
+  const resolvedDir = resolve(dirPath)
+  return resolvedFile === resolvedDir || resolvedFile.startsWith(`${resolvedDir}${sep}`)
+}
+
+function imageContentType(filePath: string): string {
+  switch (extname(filePath).toLowerCase()) {
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg'
+    case '.webp':
+      return 'image/webp'
+    case '.gif':
+      return 'image/gif'
+    case '.bmp':
+      return 'image/bmp'
+    case '.png':
+    default:
+      return 'image/png'
+  }
+}
+
+export async function sendFinanceCheckImage(ctx: Context, taskId: string, imagePath: string): Promise<boolean> {
+  if (!imagePath) return false
+  const resolvedImagePath = basename(imagePath) === imagePath
+    ? join(taskDir(taskId), '.cache', imagePath)
+    : imagePath
+  if (!isInsideDir(resolvedImagePath, taskDir(taskId))) return false
+  try {
+    const imageStat = await stat(resolvedImagePath)
+    if (!imageStat.isFile()) return false
+  } catch {
+    return false
+  }
+  ctx.type = imageContentType(resolvedImagePath)
+  ctx.body = createReadStream(resolvedImagePath)
   return true
 }
 

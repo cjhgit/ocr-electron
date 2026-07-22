@@ -301,7 +301,7 @@ export class FinanceChecker {
         expected: row.expectedPaidAmount,
         actual: null,
         message,
-        details: buildCheckDetails(imageName, ocrText, 'payment', {
+        details: buildCheckDetails(imageName, imagePath, ocrText, 'payment', {
           coupon_code: row.couponCode,
           recognized_codes: [...paymentMap.keys()],
         }),
@@ -314,7 +314,7 @@ export class FinanceChecker {
         expected: row.expectedPaidAmount,
         actual,
         message: '实付金额一致',
-        details: buildCheckDetails(imageName, ocrText, 'payment', { coupon_code: row.couponCode }),
+        details: buildCheckDetails(imageName, imagePath, ocrText, 'payment', { coupon_code: row.couponCode }),
       }
     }
     return {
@@ -323,7 +323,7 @@ export class FinanceChecker {
       expected: row.expectedPaidAmount,
       actual,
       message: '实付金额不一致',
-      details: buildCheckDetails(imageName, ocrText, 'payment', { coupon_code: row.couponCode }),
+      details: buildCheckDetails(imageName, imagePath, ocrText, 'payment', { coupon_code: row.couponCode }),
     }
   }
 
@@ -349,7 +349,7 @@ export class FinanceChecker {
         expected: row.expectedMerchantAmount,
         actual: null,
         message: `截图中未识别到券码 ${row.couponCode} 对应的收益`,
-        details: buildCheckDetails(imageName, ocrText, 'merchant', {
+        details: buildCheckDetails(imageName, imagePath, ocrText, 'merchant', {
           coupon_code: row.couponCode,
           recognized_order_ids: [...merchantMap.keys()],
         }),
@@ -362,7 +362,7 @@ export class FinanceChecker {
         expected: row.expectedMerchantAmount,
         actual,
         message: '商家实收一致',
-        details: buildCheckDetails(imageName, ocrText, 'merchant', { coupon_code: row.couponCode }),
+        details: buildCheckDetails(imageName, imagePath, ocrText, 'merchant', { coupon_code: row.couponCode }),
       }
     }
     return {
@@ -371,13 +371,14 @@ export class FinanceChecker {
       expected: row.expectedMerchantAmount,
       actual,
       message: '商家实收不一致',
-      details: buildCheckDetails(imageName, ocrText, 'merchant', { coupon_code: row.couponCode }),
+      details: buildCheckDetails(imageName, imagePath, ocrText, 'merchant', { coupon_code: row.couponCode }),
     }
   }
 }
 
 function buildCheckDetails(
   imageName: string,
+  imagePath: string,
   ocrText: string,
   imageType: 'payment' | 'merchant',
   extra: Record<string, unknown> = {},
@@ -385,6 +386,7 @@ function buildCheckDetails(
   return {
     ...parseStructuredScreenshot(ocrText, { imageType }),
     image: imageName,
+    imagePath,
     ...extra,
   }
 }

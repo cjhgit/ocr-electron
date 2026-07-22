@@ -147,3 +147,7 @@ export function openFinanceCheckSourceFile(taskId: string) {
     method: 'POST',
   })
 }
+
+export function financeCheckImageUrl(taskId: string, imagePath: string) {
+  return `${API_BASE}/api/finance-check/tasks/${taskId}/image?path=${encodeURIComponent(imagePath)}`
+}

@@ -1,7 +1,7 @@
 {
   "name": "flow-chat",
   "productName": "Flow Chat",
-  "version": "26.722.2",
+  "version": "26.722.3",
   "main": "out/main/index.js",
   "description": "Flow Chat",
   "author": "Yunser",

@@ -41,6 +41,7 @@ async function getOcrInstance(modelRoot: string, variant: OcrModelVariant) {
 
   const asset = getModelAsset(variant)
   const modelDir = join(modelRoot, asset.dir)
+  console.log(`[ocr] loading model: variant=${variant}, preset=${asset.preset}, dir=${modelDir}`)
 
   const [detModel, recModel, dictText] = await Promise.all([
     readFile(join(modelDir, asset.det)),
@@ -53,6 +54,7 @@ async function getOcrInstance(modelRoot: string, variant: OcrModelVariant) {
   const charactersDictionary = preset.dictionary.useSpaceChar
     ? [...dictionary, ' ']
     : dictionary
+  console.log(`[ocr] model files loaded: variant=${variant}, det=${detModel.byteLength}, rec=${recModel.byteLength}, dict=${dictionary.length}`)
 
   cachedOcr = await PaddleOcrService.createInstance({
     // onnxruntime-node 与 paddleocr 的类型定义不完全一致
@@ -67,12 +69,14 @@ async function getOcrInstance(modelRoot: string, variant: OcrModelVariant) {
     },
   })
   cachedKey = key
+  console.log(`[ocr] model initialized: variant=${variant}`)
 
   return cachedOcr
 }
 
 export async function recognizeText(options: OcrRecognizeOptions) {
   const { modelRoot, variant, image } = options
+  console.log(`[ocr] recognize input: variant=${variant}, size=${image.width}x${image.height}, data=${image.data.length}`)
   const ocr = await getOcrInstance(modelRoot, variant)
 
   const results = await ocr.recognize({
@@ -80,6 +84,7 @@ export async function recognizeText(options: OcrRecognizeOptions) {
     height: image.height,
     data: image.data,
   })
+  console.log(`[ocr] recognize finished: variant=${variant}, boxes=${results.length}`)
 
   return ocr.processRecognition(results)
 }

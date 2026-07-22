@@ -1,4 +1,3 @@
-import { parentPort } from 'node:worker_threads'
 import {
   recognizeImageFromPath,
   recognizeText,
@@ -21,16 +20,19 @@ type OcrWorkerRequest =
 
 async function handleRequest(message: OcrWorkerRequest): Promise<void> {
   try {
+    console.log(`[ocr] request start: id=${message.id}, type=${message.type}`)
     const result = message.type === 'recognizeText'
       ? await recognizeText(message.options)
       : await recognizeImageFromPath(message.imagePath, message.runtime)
-    parentPort?.postMessage({
+    console.log(`[ocr] request success: id=${message.id}`)
+    process.send?.({
       id: message.id,
       ok: true,
       result: { text: result.text },
     })
   } catch (error) {
-    parentPort?.postMessage({
+    console.error(`[ocr] request failed: id=${message.id}`, error)
+    process.send?.({
       id: message.id,
       ok: false,
       error: {
@@ -41,6 +43,18 @@ async function handleRequest(message: OcrWorkerRequest): Promise<void> {
   }
 }
 
-parentPort?.on('message', (message: OcrWorkerRequest) => {
-  void handleRequest(message)
+process.on('uncaughtException', (error) => {
+  console.error('[ocr] uncaught exception:', error)
+})
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[ocr] unhandled rejection:', reason)
+})
+
+let queue = Promise.resolve()
+
+process.on('message', (message: OcrWorkerRequest) => {
+  queue = queue.then(() => handleRequest(message)).catch((error) => {
+    console.error('[ocr] request queue failed:', error)
+  })
 })

@@ -253,7 +253,19 @@ export class FinanceChecker {
 
   private getOcrResult(imagePath: string): Promise<PaddleOcrRecognizeResult> {
     if (!this.ocrCache.has(imagePath)) {
-      this.ocrCache.set(imagePath, this.ocrRecognizeProvider(imagePath))
+      const startedAt = Date.now()
+      console.log(`[finance-check] OCR 开始: ${imagePath}`)
+      const request = this.ocrRecognizeProvider(imagePath)
+        .then((result) => {
+          console.log(`[finance-check] OCR 完成: ${imagePath}, duration=${formatLogDuration(startedAt)}, textLength=${result.text.length}`)
+          return result
+        })
+        .catch((error) => {
+          this.ocrCache.delete(imagePath)
+          console.error(`[finance-check] OCR 失败: ${imagePath}, duration=${formatLogDuration(startedAt)}`, error)
+          throw error
+        })
+      this.ocrCache.set(imagePath, request)
     }
     return this.ocrCache.get(imagePath)!
   }

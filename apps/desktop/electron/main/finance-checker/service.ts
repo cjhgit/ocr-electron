@@ -209,6 +209,7 @@ function upsertItem(items: FinanceCheckTaskItem[], item: FinanceCheckTaskItem): 
 
 async function runTask(task: StoredTask): Promise<void> {
   const started = Date.now()
+  console.log(`[finance-check] 任务开始: taskId=${task.id}, file=${task.sourcePath}, concurrency=${task.rowConcurrency ?? FINANCE_CHECK_ROW_CONCURRENCY}`)
   await updateTask(task.id, (current) => {
     current.taskStatus = 'running'
     current.startedAt = nowIso()
@@ -276,8 +277,14 @@ async function runTask(task: StoredTask): Promise<void> {
       current.finishedAt = nowIso()
       current.durationMs = Date.now() - started
     })
+    console.log(`[finance-check] 任务完成: taskId=${task.id}, duration=${Date.now() - started}ms`)
   } catch (error) {
     const isCancelled = error instanceof FinanceCheckCancelledError
+    if (isCancelled) {
+      console.warn(`[finance-check] 任务取消: taskId=${task.id}`)
+    } else {
+      console.error(`[finance-check] 任务失败: taskId=${task.id}`, error)
+    }
     await updateTask(task.id, (current) => {
       current.taskStatus = isCancelled ? 'cancelled' : 'failed'
       current.errorMessage = isCancelled ? null : error instanceof Error ? error.message : '对账失败'
@@ -297,6 +304,8 @@ async function processQueue(): Promise<void> {
       if (!nextTask) break
       await runTask(nextTask)
     }
+  } catch (error) {
+    console.error('[finance-check] 队列处理失败:', error)
   } finally {
     processing = false
   }
@@ -343,7 +352,9 @@ export async function createFinanceCheckTask(payload: {
   const store = await readStore()
   store.tasks.unshift(task)
   await writeStore(store)
-  void processQueue()
+  void processQueue().catch((error) => {
+    console.error('[finance-check] 启动队列失败:', error)
+  })
   return { taskId: id, taskStatus: task.taskStatus }
 }
 

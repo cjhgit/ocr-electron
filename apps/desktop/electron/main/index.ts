@@ -95,6 +95,14 @@ if (!app.requestSingleInstanceLock()) {
   process.exit(0)
 }
 
+process.on('uncaughtException', (error) => {
+  console.error('[main] uncaught exception:', error)
+})
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] unhandled rejection:', reason)
+})
+
 let win: BrowserWindow | null = null
 
 const preloadPath = path.join(__dirname, '../preload/index.js')
@@ -624,6 +632,9 @@ function createHttpServer() {
   const server = koaApp.listen(PORT, () => {
     console.log(`HTTP 服务器运行在 http://localhost:${PORT}`)
   })
+  server.on('error', (error) => {
+    console.error('[main] HTTP server error:', error)
+  })
 
   return server
 }
@@ -696,6 +707,12 @@ app.whenReady().then(async () => {
   if (isDev) {
     console.log('[main] DevTools: View -> Toggle Developer Tools, or chrome://inspect -> 127.0.0.1:9222')
   }
+}).catch((error) => {
+  console.error('[main] app startup failed:', error)
+})
+
+app.on('child-process-gone', (_event, details) => {
+  console.error('[main] child process gone:', details)
 })
 
 app.on('window-all-closed', () => {

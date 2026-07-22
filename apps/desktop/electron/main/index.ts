@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, shell } from 'electron'
+import { app, BrowserWindow, shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { execSync } from 'node:child_process'
@@ -31,24 +31,23 @@ function resolveDevServerUrl(): string | undefined {
 function configureWindowsGpu(): void {
   app.setAppUserModelId(app.getName())
 
-  // swiftshader: 软件 GL，兼顾 GPU 崩溃环境与正常渲染（避免 disableHardwareAcceleration 白屏）
-  // disable: 完全禁用硬件加速（原方案，部分机器会白屏且 DevTools 无法打开）
-  // native: 不干预，使用系统 GPU
-  const gpuMode = process.env.ELECTRON_GPU_MODE ?? 'swiftshader'
+  const gpuMode = process.env.ELECTRON_GPU_MODE ?? 'disable'
 
   switch (gpuMode) {
-    case 'disable':
-      app.disableHardwareAcceleration()
-      app.commandLine.appendSwitch('disable-gpu-sandbox')
-      app.commandLine.appendSwitch('enable-software-rasterizer')
-      break
     case 'native':
       break
     case 'swiftshader':
-    default:
       app.commandLine.appendSwitch('disable-gpu-sandbox')
       app.commandLine.appendSwitch('use-angle', 'swiftshader')
       app.commandLine.appendSwitch('use-gl', 'angle')
+      break
+    case 'disable':
+    default:
+      // Electron 38+ / Chromium 139+：须同时禁用 GPU 与 DirectComposition，否则 Windows 白屏
+      app.disableHardwareAcceleration()
+      app.commandLine.appendSwitch('disable-gpu')
+      app.commandLine.appendSwitch('disable-direct-composition')
+      app.commandLine.appendSwitch('disable-gpu-sandbox')
       break
   }
 
@@ -81,28 +80,20 @@ let win: BrowserWindow | null = null
 const preloadPath = path.join(__dirname, '../preload/index.js')
 const indexHtml = path.join(RENDERER_DIST, 'index.html')
 
-function setupAppMenu() {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    ...(process.platform === 'darwin'
-      ? [{ role: 'appMenu' as const }]
-      : []),
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload' },
-        { role: 'forceReload' },
-        { role: 'toggleDevTools' },
-        { type: 'separator' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' },
-      ],
-    },
-  ]
+async function logRendererState(label: string) {
+  if (!win || win.webContents.isDestroyed()) return
 
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+  try {
+    const state = await win.webContents.executeJavaScript(`({
+      url: location.href,
+      title: document.title,
+      rootLen: document.getElementById('root')?.innerHTML?.length ?? 0,
+      bodyLen: document.body?.innerText?.length ?? 0,
+    })`)
+    console.log(`[renderer] ${label}:`, state)
+  } catch (error) {
+    console.error(`[renderer] ${label} inspect failed:`, error)
+  }
 }
 
 function createHttpServer() {
@@ -230,7 +221,6 @@ async function createWindow() {
     contextIsolation: true,
     nodeIntegration: false,
     sandbox: false,
-    webSecurity: !isDev,
   }
 
   if (existsSync(preloadPath)) {
@@ -252,18 +242,20 @@ async function createWindow() {
 
   win.webContents.on('did-finish-load', () => {
     console.log('[renderer] did-finish-load:', win?.webContents.getURL())
-    if (isDev) {
-      win?.webContents.openDevTools({ mode: 'right' })
-    }
+    void logRendererState('after load')
+    setTimeout(() => {
+      void logRendererState('after 2s')
+    }, 2000)
   })
 
   win.webContents.on('render-process-gone', (_event, details) => {
     console.error('[renderer] process gone:', details.reason)
   })
 
-  win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
-    if (level >= 2) {
-      console.error(`[renderer] ${message} (${sourceId}:${line})`)
+  win.webContents.on('console-message', (event) => {
+    const { level, message, sourceId, lineNumber } = event
+    if (level === 'warning' || level === 'error') {
+      console.error(`[renderer] ${message} (${sourceId}:${lineNumber})`)
     }
   })
 
@@ -280,11 +272,10 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  setupAppMenu()
   await createWindow()
   createHttpServer()
   if (isDev) {
-    console.log('[main] remote debugging: chrome://inspect -> 127.0.0.1:9222')
+    console.log('[main] DevTools: View -> Toggle Developer Tools, or chrome://inspect -> 127.0.0.1:9222')
   }
 })
 

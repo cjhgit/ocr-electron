@@ -1,10 +1,14 @@
 import { type DragEvent, useEffect, useMemo, useRef, useState } from 'react'
+import appPackage from '../package.json'
 import {
   ArrowLeft,
+  Bug,
+  Cpu,
   Download,
   Eye,
   FileSpreadsheet,
   FolderOpen,
+  Info as InfoIcon,
   RefreshCw,
   ScanSearch,
   Trash2,
@@ -68,6 +72,8 @@ const ITEM_STATUS_OPTIONS: Array<{ value: FinanceCheckResultStatus | 'all'; labe
   { value: 'skip', label: '跳过' },
   { value: 'error', label: '异常' },
 ]
+
+type SettingsTab = 'model' | 'debug' | 'about'
 
 function formatTime(iso: string | null): string {
   if (!iso) return '-'
@@ -180,6 +186,7 @@ function OcrSettings({
   onConfigChange: (modelRoot: string, variant: OcrModelVariant, financeCheckRowConcurrency: number) => void
   onModelInfoChange: (value: OcrServerModelInfo) => void
 }) {
+  const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTab>('model')
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [resultText, setResultText] = useState('')
@@ -189,6 +196,14 @@ function OcrSettings({
   const [modelDownloading, setModelDownloading] = useState(false)
   const [openingConfigFolder, setOpeningConfigFolder] = useState(false)
   const [error, setError] = useState('')
+  const settingsTabs = useMemo(
+    () => [
+      { key: 'model' as const, label: '模型', icon: Cpu },
+      { key: 'debug' as const, label: '调试', icon: Bug },
+      { key: 'about' as const, label: '关于', icon: InfoIcon },
+    ],
+    [],
+  )
 
   async function refreshModelInfo() {
     setModelStatusLoading(true)
@@ -268,86 +283,121 @@ function OcrSettings({
   }
 
   return (
-    <div className="tab-page">
-      <section className="panel">
-        <div className="toolbar">
-          <div>
-            <h2>模型配置</h2>
-            {modelInfo && <p className="muted">server 模型目录：{modelInfo.modelDir}</p>}
-          </div>
-          <button type="button" className="secondary-button icon-text" onClick={() => void handleDownloadModel()} disabled={modelDownloading}>
-            <Download size={16} />{modelDownloading ? '下载中...' : modelInfo?.ready ? '重新下载 server 模型' : '下载 server 模型'}
-          </button>
-        </div>
-        <label className="field">
-          <span>paddleocr-js-onnx 路径</span>
-          <input value={modelRoot} onChange={(event) => onModelRootChange(event.target.value)} placeholder="/path/to/paddleocr-js-onnx" />
-        </label>
-        <label className="field">
-          <span>模型类型</span>
-          <select value={variant} onChange={(event) => onVariantChange(event.target.value as OcrModelVariant)} disabled>
-            <option value="server">server（高精度）</option>
-            <option value="mobile">mobile（轻量）</option>
-          </select>
-        </label>
-        <label className="field">
-          <span>对账行并发数</span>
-          <input
-            type="number"
-            min={1}
-            max={20}
-            step={1}
-            value={financeCheckRowConcurrency}
-            onChange={(event) => onFinanceCheckRowConcurrencyChange(Number(event.target.value))}
-          />
-        </label>
-        {modelInfo && (
-          <div className="model-files">
-            {modelInfo.files.map((file) => (
-              <div key={file.fileName} className="model-file-row">
-                <span>{file.fileName}</span>
-                <strong>{file.exists ? formatBytes(file.size) : '未下载'}</strong>
+    <div className="settings-page">
+      <aside className="settings-sidebar" aria-label="设置分类">
+        {settingsTabs.map((tab) => {
+          const Icon = tab.icon
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              className={activeSettingsTab === tab.key ? 'active' : ''}
+              onClick={() => setActiveSettingsTab(tab.key)}
+            >
+              <Icon size={16} />
+              <span>{tab.label}</span>
+            </button>
+          )
+        })}
+      </aside>
+
+      <div className="settings-content">
+        {activeSettingsTab === 'model' && (
+          <section className="panel">
+            <div className="toolbar">
+              <div>
+                <h2>模型配置</h2>
+                {modelInfo && <p className="muted">server 模型目录：{modelInfo.modelDir}</p>}
               </div>
-            ))}
+              <button type="button" className="secondary-button icon-text" onClick={() => void handleDownloadModel()} disabled={modelDownloading}>
+                <Download size={16} />{modelDownloading ? '下载中...' : modelInfo?.ready ? '重新下载 server 模型' : '下载 server 模型'}
+              </button>
+            </div>
+            <label className="field">
+              <span>paddleocr-js-onnx 路径</span>
+              <input value={modelRoot} onChange={(event) => onModelRootChange(event.target.value)} placeholder="/path/to/paddleocr-js-onnx" />
+            </label>
+            <label className="field">
+              <span>模型类型</span>
+              <select value={variant} onChange={(event) => onVariantChange(event.target.value as OcrModelVariant)} disabled>
+                <option value="server">server（高精度）</option>
+                <option value="mobile">mobile（轻量）</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>对账行并发数</span>
+              <input
+                type="number"
+                min={1}
+                max={20}
+                step={1}
+                value={financeCheckRowConcurrency}
+                onChange={(event) => onFinanceCheckRowConcurrencyChange(Number(event.target.value))}
+              />
+            </label>
+            {modelInfo && (
+              <div className="model-files">
+                {modelInfo.files.map((file) => (
+                  <div key={file.fileName} className="model-file-row">
+                    <span>{file.fileName}</span>
+                    <strong>{file.exists ? formatBytes(file.size) : '未下载'}</strong>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!modelInfo && modelStatusLoading && <p className="muted">正在检测模型文件...</p>}
+          </section>
+        )}
+
+        {activeSettingsTab === 'debug' && (
+          <div className="tab-page">
+            <section className="panel">
+              <h2>上传图片识别</h2>
+              <label className="upload-button">
+                选择图片
+                <input type="file" accept="image/*" onChange={(event) => {
+                  setSelectedFile(event.target.files?.[0] ?? null)
+                  setResultText('')
+                  setError('')
+                }} />
+              </label>
+              {selectedFile && <p className="file-name">{selectedFile.name}</p>}
+              {previewUrl && <img src={previewUrl} alt="预览" className="preview-image" />}
+              <button type="button" className="primary-button" onClick={handleRecognize} disabled={loading || !selectedFile}>
+                {loading ? '识别中...' : '开始识别'}
+              </button>
+            </section>
+
+            <section className="panel">
+              <h2>识别结果</h2>
+              {error && <p className="error-text">{error}</p>}
+              <textarea className="result-text" value={resultText} readOnly placeholder="识别结果会显示在这里" />
+            </section>
+
+            <section className="panel">
+              <div className="toolbar">
+                <div>
+                  <h2>配置文件</h2>
+                  <p className="muted">{configPath || '~/.finance-checker/config.json'}</p>
+                </div>
+                <button type="button" className="secondary-button icon-text" onClick={() => void handleOpenConfigFolder()} disabled={openingConfigFolder}>
+                  <FolderOpen size={16} />{openingConfigFolder ? '打开中...' : '打开配置文件夹'}
+                </button>
+              </div>
+            </section>
           </div>
         )}
-        {!modelInfo && modelStatusLoading && <p className="muted">正在检测模型文件...</p>}
-      </section>
 
-      <section className="panel">
-        <h2>上传图片</h2>
-        <label className="upload-button">
-          选择图片
-          <input type="file" accept="image/*" onChange={(event) => {
-            setSelectedFile(event.target.files?.[0] ?? null)
-            setResultText('')
-            setError('')
-          }} />
-        </label>
-        {selectedFile && <p className="file-name">{selectedFile.name}</p>}
-        {previewUrl && <img src={previewUrl} alt="预览" className="preview-image" />}
-        <button type="button" className="primary-button" onClick={handleRecognize} disabled={loading || !selectedFile}>
-          {loading ? '识别中...' : '开始识别'}
-        </button>
-      </section>
-
-      <section className="panel">
-        <h2>识别结果</h2>
-        {error && <p className="error-text">{error}</p>}
-        <textarea className="result-text" value={resultText} readOnly placeholder="识别结果会显示在这里" />
-      </section>
-
-      <section className="panel">
-        <div className="toolbar">
-          <div>
-            <h2>配置文件</h2>
-            <p className="muted">{configPath || '~/.finance-checker/config.json'}</p>
-          </div>
-          <button type="button" className="secondary-button icon-text" onClick={() => void handleOpenConfigFolder()} disabled={openingConfigFolder}>
-            <FolderOpen size={16} />{openingConfigFolder ? '打开中...' : '打开配置文件夹'}
-          </button>
-        </div>
-      </section>
+        {activeSettingsTab === 'about' && (
+          <section className="panel">
+            <h2>关于</h2>
+            <div className="about-version">
+              <span>版本号</span>
+              <strong>{appPackage.version || '-'}</strong>
+            </div>
+          </section>
+        )}
+      </div>
     </div>
   )
 }

@@ -5,7 +5,7 @@ import { homedir } from 'node:os'
 import { nanoid } from 'nanoid'
 import type { Context } from 'koa'
 import { recognizeImageFromPath } from '../ocr/service'
-import { FINANCE_CHECK_MAX_FILE_SIZE_BYTES, FINANCE_CHECK_TOLERANCE } from './constants'
+import { FINANCE_CHECK_TOLERANCE } from './constants'
 import { validateFinanceCheckUpload } from './excel-reader'
 import { auditOutputFilename, writeAuditWorkbook } from './excel-writer'
 import {
@@ -285,7 +285,6 @@ export async function createFinanceCheckTask(payload: {
   await ensureStore()
   if (extname(payload.fileName).toLowerCase() !== '.xlsx') throw new Error('仅支持 .xlsx 文件')
   const content = Buffer.from(payload.contentBase64, 'base64')
-  if (content.byteLength > FINANCE_CHECK_MAX_FILE_SIZE_BYTES) throw new Error('文件不能超过 50MB')
   await validateFinanceCheckUpload(content)
 
   const id = nanoid()

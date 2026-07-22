@@ -133,7 +133,13 @@ function createHttpServer() {
     }
   })
 
-  koaApp.use(bodyParser())
+  koaApp.use(
+    bodyParser({
+      jsonLimit: '2048mb',
+      formLimit: '2048mb',
+      textLimit: '2048mb',
+    }),
+  )
 
   router.get('/', (ctx) => {
     ctx.body = 'hello chat'

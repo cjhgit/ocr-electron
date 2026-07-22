@@ -1,135 +1,131 @@
-import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import * as ort from 'onnxruntime-node'
-import { decode as decodeJpeg } from 'jpeg-js'
-import { decode as decodePng } from 'fast-png'
-import { getModelPreset, PaddleOcrService } from 'paddleocr'
-import { getModelAsset, type OcrModelVariant } from './config'
+import { Worker } from 'node:worker_threads'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import type { OcrModelVariant } from './config'
+import type {
+  OcrImageInput,
+  OcrRecognizeOptions,
+  OcrRuntimeOptions,
+} from './engine'
 
-function toArrayBuffer(buffer: Buffer): ArrayBuffer {
-  return buffer.buffer.slice(
-    buffer.byteOffset,
-    buffer.byteOffset + buffer.byteLength,
-  ) as ArrayBuffer
+type OcrWorkerSuccess = {
+  id: number
+  ok: true
+  result: { text: string }
 }
 
-export type OcrImageInput = {
-  width: number
-  height: number
-  data: Uint8Array
+type OcrWorkerFailure = {
+  id: number
+  ok: false
+  error: {
+    message: string
+    stack?: string
+  }
 }
 
-export type OcrRecognizeOptions = {
-  modelRoot: string
-  variant: OcrModelVariant
-  image: OcrImageInput
-}
+type OcrWorkerResponse = OcrWorkerSuccess | OcrWorkerFailure
 
-export type OcrRuntimeOptions = {
-  modelRoot: string
-  variant: OcrModelVariant
-}
+type OcrWorkerRequest =
+  | {
+      id: number
+      type: 'recognizeText'
+      options: OcrRecognizeOptions
+    }
+  | {
+      id: number
+      type: 'recognizeImageFromPath'
+      imagePath: string
+      runtime: OcrRuntimeOptions
+    }
 
-let cachedKey: string | null = null
-let cachedOcr: PaddleOcrService | null = null
+type OcrWorkerRequestPayload =
+  | {
+      type: 'recognizeText'
+      options: OcrRecognizeOptions
+    }
+  | {
+      type: 'recognizeImageFromPath'
+      imagePath: string
+      runtime: OcrRuntimeOptions
+    }
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+
 let defaultRuntime: OcrRuntimeOptions | null = null
+let worker: Worker | null = null
+let nextRequestId = 1
+const pendingRequests = new Map<number, {
+  resolve: (value: { text: string }) => void
+  reject: (reason: unknown) => void
+}>()
 
 export function setDefaultOcrRuntime(options: OcrRuntimeOptions) {
   defaultRuntime = options
 }
 
-async function getOcrInstance(modelRoot: string, variant: OcrModelVariant) {
-  const key = `${modelRoot}:${variant}`
-  if (cachedKey === key && cachedOcr) {
-    return cachedOcr
-  }
+function getWorker(): Worker {
+  if (worker) return worker
 
-  const asset = getModelAsset(variant)
-  const modelDir = join(modelRoot, asset.dir)
-
-  const [detModel, recModel, dictText] = await Promise.all([
-    readFile(join(modelDir, asset.det)),
-    readFile(join(modelDir, asset.rec)),
-    readFile(join(modelDir, asset.dict), 'utf-8'),
-  ])
-
-  const preset = getModelPreset(asset.preset)
-  const dictionary = dictText.trimEnd().split(/\r?\n/)
-  const charactersDictionary = preset.dictionary.useSpaceChar
-    ? [...dictionary, ' ']
-    : dictionary
-
-  cachedOcr = await PaddleOcrService.createInstance({
-    // onnxruntime-node 与 paddleocr 的类型定义不完全一致
-    ort: ort as never,
-    modelPreset: asset.preset,
-    detection: {
-      modelBuffer: toArrayBuffer(detModel),
-    },
-    recognition: {
-      modelBuffer: toArrayBuffer(recModel),
-      charactersDictionary,
-    },
+  worker = new Worker(join(__dirname, 'ocr-worker.js'))
+  worker.on('message', (message: OcrWorkerResponse) => {
+    const pending = pendingRequests.get(message.id)
+    if (!pending) return
+    pendingRequests.delete(message.id)
+    if (message.ok) {
+      pending.resolve(message.result)
+      return
+    }
+    const error = new Error(message.error.message)
+    error.stack = message.error.stack
+    pending.reject(error)
   })
-  cachedKey = key
-
-  return cachedOcr
+  worker.on('error', (error) => {
+    rejectAllPending(error instanceof Error ? error : new Error(String(error)))
+    worker = null
+  })
+  worker.on('exit', (code) => {
+    if (code !== 0) {
+      rejectAllPending(new Error(`OCR 工作线程异常退出：${code}`))
+    }
+    worker = null
+  })
+  return worker
 }
+
+function rejectAllPending(error: Error): void {
+  for (const pending of pendingRequests.values()) {
+    pending.reject(error)
+  }
+  pendingRequests.clear()
+}
+
+function callWorker(request: OcrWorkerRequestPayload): Promise<{ text: string }> {
+  const id = nextRequestId
+  nextRequestId += 1
+  const activeWorker = getWorker()
+  return new Promise((resolve, reject) => {
+    pendingRequests.set(id, { resolve, reject })
+    activeWorker.postMessage({ ...request, id })
+  })
+}
+
+export type { OcrImageInput, OcrRecognizeOptions, OcrRuntimeOptions, OcrModelVariant }
 
 export async function recognizeText(options: OcrRecognizeOptions) {
-  const { modelRoot, variant, image } = options
-  setDefaultOcrRuntime({ modelRoot, variant })
-  const ocr = await getOcrInstance(modelRoot, variant)
-
-  const results = await ocr.recognize({
-    width: image.width,
-    height: image.height,
-    data: image.data,
+  setDefaultOcrRuntime({ modelRoot: options.modelRoot, variant: options.variant })
+  return callWorker({
+    type: 'recognizeText',
+    options,
   })
-
-  return ocr.processRecognition(results)
-}
-
-function toRgba(data: Uint8Array, channels: number): Uint8Array {
-  if (channels === 4) return data
-  const rgba = new Uint8Array((data.length / channels) * 4)
-  for (let source = 0, target = 0; source < data.length; source += channels, target += 4) {
-    rgba[target] = data[source] ?? 0
-    rgba[target + 1] = data[source + 1] ?? 0
-    rgba[target + 2] = data[source + 2] ?? 0
-    rgba[target + 3] = channels === 2 ? data[source + 1] ?? 255 : 255
-  }
-  return rgba
-}
-
-async function loadImageFromPath(imagePath: string): Promise<OcrImageInput> {
-  const buffer = await readFile(imagePath)
-  const lower = imagePath.toLowerCase()
-  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
-    const decoded = decodeJpeg(buffer, { useTArray: true })
-    return {
-      width: decoded.width,
-      height: decoded.height,
-      data: new Uint8Array(decoded.data),
-    }
-  }
-
-  const decoded = decodePng(buffer)
-  return {
-    width: decoded.width,
-    height: decoded.height,
-    data: toRgba(new Uint8Array(decoded.data), decoded.channels),
-  }
 }
 
 export async function recognizeImageFromPath(imagePath: string) {
   if (!defaultRuntime) {
     throw new Error('请先在“设置”中完成一次 OCR 识别，或配置模型后再执行对账')
   }
-  const image = await loadImageFromPath(imagePath)
-  return recognizeText({
-    modelRoot: defaultRuntime.modelRoot,
-    variant: defaultRuntime.variant,
-    image,
+  return callWorker({
+    type: 'recognizeImageFromPath',
+    imagePath,
+    runtime: defaultRuntime,
   })
 }

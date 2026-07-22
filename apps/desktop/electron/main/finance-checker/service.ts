@@ -76,6 +76,7 @@ type StoreData = {
 const DATA_DIR = join(homedir(), '.finance-checker')
 const TASKS_FILE = join(DATA_DIR, 'tasks.json')
 const FILES_DIR = join(DATA_DIR, 'files')
+const PROGRESS_FLUSH_INTERVAL_MS = 1000
 
 let processing = false
 
@@ -192,13 +193,14 @@ async function readItems(taskId: string): Promise<FinanceCheckTaskItem[]> {
   return readJson<FinanceCheckTaskItem[]>(itemPath(taskId), [])
 }
 
-async function appendItem(taskId: string, item: FinanceCheckTaskItem): Promise<void> {
-  const items = await readItems(taskId)
+async function writeItems(taskId: string, items: FinanceCheckTaskItem[]): Promise<void> {
+  await writeJson(itemPath(taskId), items)
+}
+
+function upsertItem(items: FinanceCheckTaskItem[], item: FinanceCheckTaskItem): void {
   const existingIndex = items.findIndex((entry) => entry.id === item.id)
   if (existingIndex >= 0) items[existingIndex] = item
   else items.push(item)
-  items.sort((a, b) => a.rowNumber - b.rowNumber)
-  await writeJson(itemPath(taskId), items)
 }
 
 async function runTask(task: StoredTask): Promise<void> {
@@ -214,6 +216,26 @@ async function runTask(task: StoredTask): Promise<void> {
       tolerance: task.tolerance,
       ocrRecognizeProvider: recognizeImageFromPath,
     })
+    const taskItems: FinanceCheckTaskItem[] = []
+    let lastFlushAt = 0
+    let flushQueue = Promise.resolve()
+
+    async function flushProgress(processedRows: number, totalRows: number): Promise<void> {
+      const currentTime = Date.now()
+      if (processedRows < totalRows && currentTime - lastFlushAt < PROGRESS_FLUSH_INTERVAL_MS) return
+      lastFlushAt = currentTime
+      flushQueue = flushQueue.then(async () => {
+        taskItems.sort((a, b) => a.rowNumber - b.rowNumber)
+        await writeItems(task.id, taskItems)
+        await updateTask(task.id, (current) => {
+          current.processedRows = processedRows
+          current.totalRows = totalRows
+          current.progressPercent = totalRows > 0 ? Math.round((processedRows / totalRows) * 100) : 0
+        })
+      })
+      await flushQueue
+    }
+
     const result = await checker.checkWorkbookConcurrent(task.sourcePath, {
       cacheDir: join(taskDir(task.id), '.cache'),
       shouldCancel: async () => {
@@ -221,18 +243,15 @@ async function runTask(task: StoredTask): Promise<void> {
         return store.tasks.find((item) => item.id === task.id)?.cancelledRequested === true
       },
       onRowProcessed: async (processedRows, totalRows, rowResult) => {
-        await appendItem(task.id, itemFromRowResult(task.id, rowResult))
-        await updateTask(task.id, (current) => {
-          current.processedRows = processedRows
-          current.totalRows = totalRows
-          current.progressPercent = totalRows > 0 ? Math.round((processedRows / totalRows) * 100) : 0
-        })
+        upsertItem(taskItems, itemFromRowResult(task.id, rowResult))
+        await flushProgress(processedRows, totalRows)
       },
     })
 
-    for (const rowResult of result.rows) {
-      await appendItem(task.id, itemFromRowResult(task.id, rowResult))
-    }
+    await flushQueue
+    const finalItems = result.rows.map((rowResult) => itemFromRowResult(task.id, rowResult))
+    finalItems.sort((a, b) => a.rowNumber - b.rowNumber)
+    await writeItems(task.id, finalItems)
 
     const report: FinanceCheckJsonReport = renderJsonReport(result)
     await writeJson(reportPath(task.id), report)

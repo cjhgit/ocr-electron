@@ -26,7 +26,10 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin(), fixElectronRequire()],
     build: {
       rollupOptions: {
-        input: resolve(__dirname, 'electron/main/index.ts'),
+        input: {
+          index: resolve(__dirname, 'electron/main/index.ts'),
+          'ocr-worker': resolve(__dirname, 'electron/main/ocr/worker.ts'),
+        },
         output: {
           format: 'cjs',
         },

@@ -32,6 +32,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs'
 import { Textarea } from './components/ui/textarea'
 import {
+  detectSystemNode,
   downloadServerModel,
   fetchServerModelInfo,
   fetchAppConfig,
@@ -178,6 +179,11 @@ function formatOcrModelVariant(variant: OcrModelVariant | null): string {
   return variant ? OCR_MODEL_LABEL[variant] : '-'
 }
 
+function formatOcrNodeModeLabel(mode: OcrNodeMode, nodeVersion: string | null = null): string {
+  if (mode === 'custom') return '自定义 Node.js'
+  return nodeVersion ? `内置 Node.js v${nodeVersion}` : '内置 Node.js'
+}
+
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '-'
   if (bytes < 1024) return `${bytes} B`
@@ -321,7 +327,6 @@ function OcrSettings({
   financeCheckRowConcurrency,
   ocrNodeMode,
   ocrNodePath,
-  ocrNodeInfo,
   configPath,
   onModelRootChange,
   onVariantChange,
@@ -336,7 +341,6 @@ function OcrSettings({
   financeCheckRowConcurrency: number
   ocrNodeMode: OcrNodeMode
   ocrNodePath: string
-  ocrNodeInfo: AppConfig['ocrNodeInfo'] | null
   configPath: string
   onModelRootChange: (value: string) => void
   onVariantChange: (value: OcrModelVariant) => void
@@ -357,6 +361,8 @@ function OcrSettings({
   const [openingConfigFolder, setOpeningConfigFolder] = useState(false)
   const [openingLogFolder, setOpeningLogFolder] = useState(false)
   const [clearingLogs, setClearingLogs] = useState(false)
+  const [detectingSystemNode, setDetectingSystemNode] = useState(false)
+  const [detectSystemNodeError, setDetectSystemNodeError] = useState('')
   const [error, setError] = useState('')
   const selectedModelOption = OCR_MODEL_OPTIONS.find((option) => option.value === variant) ?? OCR_MODEL_OPTIONS[0]
   const settingsTabs = useMemo(
@@ -569,7 +575,7 @@ function OcrSettings({
             <CardHeader>
               <CardTitle>Node.js 配置</CardTitle>
               <CardDescription>
-                当前使用：{ocrNodeInfo?.resolvedPath || '未检测'}
+                OCR 识别进程使用的 Node.js 运行时
               </CardDescription>
             </CardHeader>
             <CardContent className={cardStackClass}>
@@ -579,43 +585,61 @@ function OcrSettings({
                 className="grid gap-3 sm:grid-cols-2"
               >
                 <label className="flex min-h-16 cursor-pointer items-start gap-3 rounded-lg border p-3">
-                  <RadioGroupItem value="auto" />
+                  <RadioGroupItem value="builtin" />
                   <span className="grid gap-1">
-                    <strong className="text-sm font-medium">自动</strong>
-                    <span className="text-xs text-muted-foreground">按环境变量、NVM、PATH 自动查找系统 Node</span>
+                    <strong className="text-sm font-medium">内置</strong>
+                    <span className="text-xs text-muted-foreground">使用应用自带的 Node.js，无需额外安装</span>
                   </span>
                 </label>
                 <label className="flex min-h-16 cursor-pointer items-start gap-3 rounded-lg border p-3">
                   <RadioGroupItem value="custom" />
                   <span className="grid gap-1">
                     <strong className="text-sm font-medium">自定义</strong>
-                    <span className="text-xs text-muted-foreground">使用下面填写的 Node 可执行文件路径</span>
+                    <span className="text-xs text-muted-foreground">指定系统已安装的 Node.js 可执行文件路径</span>
                   </span>
                 </label>
               </RadioGroup>
-              <label className={fieldClass}>
-                <span>Node.js 路径</span>
-                <Input
-                  value={ocrNodePath}
-                  onChange={(event) => onOcrNodePathChange(event.target.value)}
-                  placeholder="/path/to/node"
-                  disabled={ocrNodeMode !== 'custom'}
-                />
-              </label>
-              {ocrNodeInfo && (
-                <div className="grid gap-2 rounded-lg border bg-muted p-3 text-xs">
-                  <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-3">
-                    <span className="text-muted-foreground">运行方式</span>
-                    <strong className="font-semibold text-foreground">{ocrNodeInfo.source === 'custom' ? '自定义 Node.js' : ocrNodeInfo.usingElectronAsNode ? 'Electron 自带 Node.js' : '系统 Node.js'}</strong>
+              {ocrNodeMode === 'custom' && (
+                <div className={cardStackClass}>
+                  <label className={fieldClass}>
+                    <span>Node.js 路径</span>
+                    <Input
+                      value={ocrNodePath}
+                      onChange={(event) => {
+                        setDetectSystemNodeError('')
+                        onOcrNodePathChange(event.target.value)
+                      }}
+                      placeholder="/path/to/node"
+                    />
+                  </label>
+                  <div className={actionsClass}>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={detectingSystemNode}
+                      onClick={() => {
+                        void (async () => {
+                          setDetectingSystemNode(true)
+                          setDetectSystemNodeError('')
+                          try {
+                            const result = await detectSystemNode()
+                            if (result.found && result.nodePath) {
+                              onOcrNodePathChange(result.nodePath)
+                              return
+                            }
+                            setDetectSystemNodeError('未识别到系统安装的 Node.js')
+                          } catch (err) {
+                            setDetectSystemNodeError(err instanceof Error ? err.message : '识别系统 Node.js 失败')
+                          } finally {
+                            setDetectingSystemNode(false)
+                          }
+                        })()
+                      }}
+                    >
+                      {detectingSystemNode ? '识别中...' : '识别系统 Node.js'}
+                    </Button>
                   </div>
-                  <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-3">
-                    <span className="text-muted-foreground">来源</span>
-                    <strong className="font-semibold text-foreground">{ocrNodeInfo.source}</strong>
-                  </div>
-                  <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-3">
-                    <span className="text-muted-foreground">解析路径</span>
-                    <strong className="font-semibold text-foreground [overflow-wrap:anywhere]">{ocrNodeInfo.resolvedPath}</strong>
-                  </div>
+                  {detectSystemNodeError && <p className={errorTextClass}>{detectSystemNodeError}</p>}
                 </div>
               )}
             </CardContent>
@@ -1230,9 +1254,9 @@ function App() {
   const [modelRoot, setModelRoot] = useState('')
   const [variant, setVariant] = useState<OcrModelVariant>('v5_server')
   const [financeCheckRowConcurrency, setFinanceCheckRowConcurrency] = useState(5)
-  const [ocrNodeMode, setOcrNodeMode] = useState<OcrNodeMode>('auto')
+  const [ocrNodeMode, setOcrNodeMode] = useState<OcrNodeMode>('builtin')
   const [ocrNodePath, setOcrNodePath] = useState('')
-  const [ocrNodeInfo, setOcrNodeInfo] = useState<AppConfig['ocrNodeInfo'] | null>(null)
+  const [ocrNodeVersion, setOcrNodeVersion] = useState<string | null>(null)
   const [configPath, setConfigPath] = useState('')
   const [modelInfo, setModelInfo] = useState<OcrServerModelInfo | null>(null)
   const [configError, setConfigError] = useState('')
@@ -1247,7 +1271,7 @@ function App() {
         setFinanceCheckRowConcurrency(config.financeCheckRowConcurrency)
         setOcrNodeMode(config.ocrNodeMode)
         setOcrNodePath(config.ocrNodePath)
-        setOcrNodeInfo(config.ocrNodeInfo)
+        setOcrNodeVersion(config.ocrNodeInfo.nodeVersion)
         setConfigPath(config.configPath)
         setModelInfo(info)
       } catch (err) {
@@ -1286,7 +1310,7 @@ function App() {
         ocrNodeMode: nextOcrNodeMode,
         ocrNodePath: nextOcrNodePath,
       })
-      setOcrNodeInfo(config.ocrNodeInfo)
+      setOcrNodeVersion(config.ocrNodeInfo.nodeVersion)
       setConfigPath(config.configPath)
       setConfigError('')
     } catch (err) {
@@ -1346,14 +1370,16 @@ function App() {
 
       {activeTab === 'finance'
         ? <FinanceCheckPage modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} modelInfo={modelInfo} onOpenSettings={() => setActiveTab('settings')} />
-        : <OcrSettings modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} ocrNodeMode={ocrNodeMode} ocrNodePath={ocrNodePath} ocrNodeInfo={ocrNodeInfo} configPath={configPath} onModelRootChange={handleModelRootChange} onVariantChange={handleVariantChange} onFinanceCheckRowConcurrencyChange={handleFinanceCheckRowConcurrencyChange} onOcrNodeModeChange={handleOcrNodeModeChange} onOcrNodePathChange={handleOcrNodePathChange} onConfigChange={handleConfigChange} onModelInfoChange={setModelInfo} />}
+        : <OcrSettings modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} ocrNodeMode={ocrNodeMode} ocrNodePath={ocrNodePath} configPath={configPath} onModelRootChange={handleModelRootChange} onVariantChange={handleVariantChange} onFinanceCheckRowConcurrencyChange={handleFinanceCheckRowConcurrencyChange} onOcrNodeModeChange={handleOcrNodeModeChange} onOcrNodePathChange={handleOcrNodePathChange} onConfigChange={handleConfigChange} onModelInfoChange={setModelInfo} />}
       <div className={bottomRightInfoClass}>
-        {ocrNodeInfo?.usingElectronAsNode && (
+        <span>{formatOcrNodeModeLabel(ocrNodeMode, ocrNodeVersion)}</span>
+        {ocrNodeMode === 'custom' && ocrNodePath && (
           <>
-            <span>使用内置 Node.js</span>
             <span aria-hidden="true">·</span>
+            <span className="max-w-[min(48vw,28rem)] truncate" title={ocrNodePath}>{ocrNodePath}</span>
           </>
         )}
+        <span aria-hidden="true">·</span>
         <span>{formatOcrModelVariant(variant)}</span>
         <span aria-hidden="true">·</span>
         <span>{formatAppVersion(appPackage.version)}</span>

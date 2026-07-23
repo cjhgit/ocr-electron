@@ -14,6 +14,7 @@ import type { Context } from 'koa'
 import Router from '@koa/router'
 import bodyParser from 'koa-bodyparser'
 import {
+  detectSystemNodePath,
   normalizeOcrNodeConfig,
   recognizeText,
   resolveOcrNodeRuntimeInfo,
@@ -238,7 +239,7 @@ async function readAppConfig(): Promise<AppConfig> {
       modelRoot: '',
       variant: 'v5_server',
       financeCheckRowConcurrency: FINANCE_CHECK_ROW_CONCURRENCY,
-      ocrNodeMode: 'auto',
+      ocrNodeMode: 'builtin',
       ocrNodePath: '',
     }
   }
@@ -543,6 +544,17 @@ function createHttpServer() {
     ctx.body = {
       code: 0,
       data: appConfigResponse(config),
+    }
+  })
+
+  router.post('/api/settings/node/detect-system', async (ctx) => {
+    const nodePath = detectSystemNodePath()
+    ctx.body = {
+      code: 0,
+      data: {
+        nodePath,
+        found: Boolean(nodePath),
+      },
     }
   })
 

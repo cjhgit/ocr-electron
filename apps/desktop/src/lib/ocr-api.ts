@@ -1,7 +1,7 @@
 const OCR_API_BASE = 'http://localhost:38765'
 
 export type OcrModelVariant = 'v5_server' | 'v6_tiny' | 'v6_small' | 'v6_medium'
-export type OcrNodeMode = 'auto' | 'custom'
+export type OcrNodeMode = 'builtin' | 'custom'
 
 export type OcrRecognizeRequest = {
   modelRoot: string
@@ -46,6 +46,7 @@ export type AppConfig = {
     resolvedPath: string
     usingElectronAsNode: boolean
     source: 'custom' | 'env' | 'nvm' | 'path' | 'shell' | 'electron'
+    nodeVersion: string | null
   }
   configDir: string
   configPath: string
@@ -153,6 +154,13 @@ export async function downloadServerModel(variant: OcrModelVariant): Promise<Ocr
 export async function fetchAppConfig(): Promise<AppConfig> {
   const response = await fetch(`${OCR_API_BASE}/api/settings/config`)
   return parseApiResponse<AppConfig>(response, '读取配置失败')
+}
+
+export async function detectSystemNode(): Promise<{ nodePath: string | null; found: boolean }> {
+  const response = await fetch(`${OCR_API_BASE}/api/settings/node/detect-system`, {
+    method: 'POST',
+  })
+  return parseApiResponse<{ nodePath: string | null; found: boolean }>(response, '识别系统 Node.js 失败')
 }
 
 export async function saveAppConfig(payload: {

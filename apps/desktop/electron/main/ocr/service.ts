@@ -10,7 +10,7 @@ import type {
   OcrRuntimeOptions,
 } from './engine'
 
-export type OcrNodeMode = 'auto' | 'custom'
+export type OcrNodeMode = 'builtin' | 'custom'
 
 export type OcrNodeConfig = {
   mode: OcrNodeMode
@@ -23,6 +23,7 @@ export type OcrNodeRuntimeInfo = {
   resolvedPath: string
   usingElectronAsNode: boolean
   source: 'custom' | 'env' | 'nvm' | 'path' | 'shell' | 'electron'
+  nodeVersion: string | null
 }
 
 type OcrWorkerSuccess = {
@@ -80,7 +81,7 @@ const OCR_REQUEST_TIMEOUT_MS = 5 * 60_000
 
 let defaultRuntime: OcrRuntimeOptions | null = null
 let nodeConfig: OcrNodeConfig = {
-  mode: 'auto',
+  mode: 'builtin',
   customPath: '',
 }
 let worker: ChildProcess | null = null
@@ -107,7 +108,8 @@ export function setOcrNodeConfig(config: OcrNodeConfig): void {
 }
 
 export function normalizeOcrNodeMode(value: unknown): OcrNodeMode {
-  return value === 'custom' ? 'custom' : 'auto'
+  if (value === 'custom') return 'custom'
+  return 'builtin'
 }
 
 export function normalizeOcrNodeConfig(config: Partial<OcrNodeConfig> | null | undefined): OcrNodeConfig {
@@ -121,6 +123,61 @@ function isElectronExecPath(execPath: string): boolean {
   return basename(execPath).toLowerCase().includes('electron')
 }
 
+function isValidSystemNodePath(nodePath: string | undefined): nodePath is string {
+  return Boolean(
+    nodePath
+    && nodePath !== process.execPath
+    && !isElectronExecPath(nodePath)
+    && existsSync(nodePath),
+  )
+}
+
+function listSystemNodeCandidates(): Array<{ path?: string; source: OcrNodeRuntimeInfo['source'] }> {
+  const nodeExecutable = process.platform === 'win32' ? 'node.exe' : 'node'
+  return [
+    { path: process.env.OCR_NODE_EXEC_PATH, source: 'env' },
+    { path: process.env.NODE_BINARY, source: 'env' },
+    { path: process.env.npm_node_execpath, source: 'env' },
+    { path: process.env.NVM_BIN ? join(process.env.NVM_BIN, nodeExecutable) : undefined, source: 'nvm' },
+    ...((process.env.PATH ?? '').split(delimiter).map((entry) => ({
+      path: entry ? join(entry, nodeExecutable) : undefined,
+      source: 'path' as const,
+    }))),
+  ]
+}
+
+function detectSystemNodePathFromShell(): string | null {
+  try {
+    const result = process.platform === 'win32'
+      ? spawnSync('cmd.exe', ['/d', '/s', '/c', 'where node'], {
+          encoding: 'utf8',
+          timeout: 5000,
+        })
+      : spawnSync(process.env.SHELL ?? 'sh', ['-lc', 'command -v node'], {
+          encoding: 'utf8',
+          timeout: 5000,
+        })
+    const nodePath = result.stdout
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => isValidSystemNodePath(line))
+    return nodePath ?? null
+  } catch (error) {
+    console.warn('[ocr] 通过 shell 查找 Node 失败:', error)
+    return null
+  }
+}
+
+export function detectSystemNodePath(): string | null {
+  for (const candidate of listSystemNodeCandidates()) {
+    if (isValidSystemNodePath(candidate.path)) {
+      return candidate.path
+    }
+  }
+  return detectSystemNodePathFromShell()
+}
+
 export function resolveOcrNodeRuntimeInfo(config: OcrNodeConfig = nodeConfig): OcrNodeRuntimeInfo {
   const normalized = normalizeOcrNodeConfig(config)
   if (normalized.mode === 'custom') {
@@ -130,68 +187,17 @@ export function resolveOcrNodeRuntimeInfo(config: OcrNodeConfig = nodeConfig): O
       resolvedPath: normalized.customPath,
       usingElectronAsNode: false,
       source: 'custom',
+      nodeVersion: null,
     }
   }
 
-  if (!process.versions.electron || !isElectronExecPath(process.execPath)) {
-    return {
-      mode: normalized.mode,
-      customPath: normalized.customPath,
-      resolvedPath: process.execPath,
-      usingElectronAsNode: false,
-      source: 'env',
-    }
-  }
-
-  const candidates: Array<{ path?: string; source: OcrNodeRuntimeInfo['source'] }> = [
-    { path: process.env.OCR_NODE_EXEC_PATH, source: 'env' },
-    { path: process.env.NODE_BINARY, source: 'env' },
-    { path: process.env.npm_node_execpath, source: 'env' },
-    { path: process.env.NVM_BIN ? join(process.env.NVM_BIN, 'node') : undefined, source: 'nvm' },
-    ...((process.env.PATH ?? '').split(delimiter).map((entry) => ({
-      path: entry ? join(entry, 'node') : undefined,
-      source: 'path' as const,
-    }))),
-  ]
-
-  for (const candidate of candidates) {
-    if (candidate.path && candidate.path !== process.execPath && existsSync(candidate.path)) {
-      return {
-        mode: normalized.mode,
-        customPath: normalized.customPath,
-        resolvedPath: candidate.path,
-        usingElectronAsNode: false,
-        source: candidate.source,
-      }
-    }
-  }
-
-  try {
-    const result = spawnSync('zsh', ['-ic', 'command -v node'], {
-      encoding: 'utf8',
-      timeout: 5000,
-    })
-    const nodePath = result.stdout.trim().split(/\r?\n/).at(-1)
-    if (nodePath && nodePath !== process.execPath && existsSync(nodePath)) {
-      return {
-        mode: normalized.mode,
-        customPath: normalized.customPath,
-        resolvedPath: nodePath,
-        usingElectronAsNode: false,
-        source: 'shell',
-      }
-    }
-  } catch (error) {
-    console.warn('[ocr] 通过 shell 查找 Node 失败:', error)
-  }
-
-  console.warn('[ocr] 未找到独立 Node 可执行文件，将回退到 Electron-as-Node')
   return {
     mode: normalized.mode,
     customPath: normalized.customPath,
     resolvedPath: process.execPath,
     usingElectronAsNode: Boolean(process.versions.electron),
     source: 'electron',
+    nodeVersion: process.versions.node ?? null,
   }
 }
 

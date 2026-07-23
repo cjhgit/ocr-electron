@@ -8,7 +8,7 @@ const HEADER_ALIASES = {
   merchantName: ['商家名称'],
   pusher: ['推单人员'],
   couponCode: ['核销券码'],
-  paymentImage: ['实付券码'],
+  paymentImage: ['实付券码', '实付券码图'],
   expectedPaidAmount: ['推单实付金额'],
   expectedMerchantAmount: ['商家实收', '商家实收金额'],
   merchantImage: ['商家实收图'],
@@ -112,18 +112,51 @@ async function readWorkbook(source: { path: string } | { buffer: Buffer | Uint8A
   return workbook
 }
 
-function getWorksheet(workbook: ExcelJS.Workbook, sheetName?: string): ExcelJS.Worksheet {
-  const worksheet = sheetName ? workbook.getWorksheet(sheetName) : workbook.worksheets[0]
-  if (!worksheet) throw new Error(sheetName ? `工作表不存在: ${sheetName}` : '表格中没有工作表')
-  return worksheet
-}
-
-function parseWorksheetRows(worksheet: ExcelJS.Worksheet) {
+function readWorksheetHeaders(worksheet: ExcelJS.Worksheet): unknown[] {
   const headers: unknown[] = []
   const headerRow = worksheet.getRow(1)
   headerRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
     headers[colNumber] = cell.value
   })
+  return headers
+}
+
+function countMatchedRequiredFields(
+  headerMap: Partial<Record<HeaderField, number>>,
+  required: readonly HeaderField[],
+): number {
+  return required.filter((field) => headerMap[field] != null).length
+}
+
+function selectWorksheet(
+  workbook: ExcelJS.Workbook,
+  sheetName: string | undefined,
+  required: readonly HeaderField[],
+): ExcelJS.Worksheet {
+  if (sheetName) {
+    const worksheet = workbook.getWorksheet(sheetName)
+    if (!worksheet) throw new Error(`工作表不存在: ${sheetName}`)
+    return worksheet
+  }
+
+  if (workbook.worksheets.length === 0) throw new Error('表格中没有工作表')
+
+  let bestWorksheet = workbook.worksheets[0]!
+  let bestMatchCount = -1
+  for (const worksheet of workbook.worksheets) {
+    const headerMap = buildHeaderMap(readWorksheetHeaders(worksheet))
+    const matchCount = countMatchedRequiredFields(headerMap, required)
+    if (matchCount === required.length) return worksheet
+    if (matchCount > bestMatchCount) {
+      bestMatchCount = matchCount
+      bestWorksheet = worksheet
+    }
+  }
+  return bestWorksheet
+}
+
+function parseWorksheetRows(worksheet: ExcelJS.Worksheet) {
+  const headers = readWorksheetHeaders(worksheet)
   const headerMap = buildHeaderMap(headers)
   const rows: RowRecord[] = []
 
@@ -171,19 +204,22 @@ function assertRequiredHeaders(headerMap: Partial<Record<HeaderField, number>>, 
 
 export async function validateFinanceCheckUpload(buffer: Buffer, sheetName?: string): Promise<void> {
   const workbook = await readWorkbook({ buffer })
-  const worksheet = getWorksheet(workbook, sheetName)
+  const worksheet = selectWorksheet(workbook, sheetName, FINANCE_CHECK_UPLOAD_REQUIRED_FIELDS)
   const { headerMap, rows } = parseWorksheetRows(worksheet)
   assertRequiredHeaders(headerMap, FINANCE_CHECK_UPLOAD_REQUIRED_FIELDS)
   const dataRows = rows.filter((row) => !row.isSummaryRow)
   if (dataRows.length === 0) throw new Error('表格中没有可对账的数据行')
 }
 
-export async function loadRows(xlsxPath: string, sheetName?: string): Promise<RowRecord[]> {
+export async function loadRows(
+  xlsxPath: string,
+  sheetName?: string,
+): Promise<{ rows: RowRecord[]; sheetName: string }> {
   const workbook = await readWorkbook({ path: xlsxPath })
-  const worksheet = getWorksheet(workbook, sheetName)
+  const worksheet = selectWorksheet(workbook, sheetName, PROCESSING_REQUIRED_FIELDS)
   const { headerMap, rows } = parseWorksheetRows(worksheet)
   assertRequiredHeaders(headerMap, PROCESSING_REQUIRED_FIELDS)
-  return rows
+  return { rows, sheetName: worksheet.name }
 }
 
 export function normalizeHeaderForWriter(value: unknown): string {

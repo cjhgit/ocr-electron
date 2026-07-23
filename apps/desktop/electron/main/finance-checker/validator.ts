@@ -127,8 +127,8 @@ export class FinanceChecker {
     options: ConcurrentWorkbookCheckOptions = {},
   ): Promise<WorkbookCheckResult> {
     const readStartedAt = Date.now()
-    const rows = await loadRows(xlsxPath, options.sheetName)
-    console.log(`[finance-check] 读取 Excel 完成: ${xlsxPath}, rows=${rows.length}, duration=${formatLogDuration(readStartedAt)}`)
+    const { rows, sheetName } = await loadRows(xlsxPath, options.sheetName)
+    console.log(`[finance-check] 读取 Excel 完成: ${xlsxPath}, sheet=${sheetName}, rows=${rows.length}, duration=${formatLogDuration(readStartedAt)}`)
     if (options.rowNumbers) {
       const available = new Set(rows.map((row) => row.rowNumber))
       const missing = [...options.rowNumbers].filter((rowNumber) => !available.has(rowNumber))
@@ -176,6 +176,7 @@ export class FinanceChecker {
 
     return {
       source: xlsxPath,
+      sheetName,
       rows: rowResults.filter((rowResult) => rowResult != null),
       imageCacheDir,
     }

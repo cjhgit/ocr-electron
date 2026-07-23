@@ -39,6 +39,7 @@ export type RowCheckResult = {
 
 export type WorkbookCheckResult = {
   source: string
+  sheetName: string
   rows: RowCheckResult[]
   imageCacheDir?: string
 }

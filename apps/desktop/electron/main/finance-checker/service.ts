@@ -270,12 +270,13 @@ async function runTask(task: StoredTask): Promise<void> {
     await writeJson(reportPath(task.id), report)
     const resultFileName = auditOutputFilename(task.sourceFileName)
     const resultPath = join(taskDir(task.id), resultFileName)
-    await writeAuditWorkbook(task.sourcePath, result, resultPath)
+    await writeAuditWorkbook(task.sourcePath, result, resultPath, result.sheetName)
 
     await updateTask(task.id, (current) => {
       current.taskStatus = 'succeeded'
       current.resultFileName = resultFileName
       current.resultPath = resultPath
+      current.sheetName = result.sheetName
       current.resultDownloadUrl = `http://localhost:38765/api/finance-check/tasks/${task.id}/download`
       current.summary = report.summary
       current.totalRows = result.rows.length

@@ -21,7 +21,13 @@ files:
   - '!**/node_modules/remend/**'
 asarUnpack:
   - resources/**
+  - out/main/ocr-worker.js
+  - out/main/chunks/**
   - node_modules/onnxruntime-node/**
+  - node_modules/onnxruntime-common/**
+  - node_modules/paddleocr/**
+  - node_modules/jpeg-js/**
+  - node_modules/fast-png/**
 win:
   executableName: 财务助手
   target:

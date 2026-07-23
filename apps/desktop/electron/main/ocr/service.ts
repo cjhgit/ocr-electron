@@ -234,13 +234,52 @@ function validateCustomNodePath(nodePath: string): void {
   }
 }
 
+function resolveAsarUnpackedPath(filePath: string): string {
+  const unpacked = filePath.replace(/app\.asar([\\/])/g, 'app.asar.unpacked$1')
+  return unpacked !== filePath && existsSync(unpacked) ? unpacked : filePath
+}
+
+function isPackagedApp(): boolean {
+  return __dirname.includes('app.asar')
+}
+
+function resolveWorkerScriptPath(): string {
+  const scriptPath = resolveAsarUnpackedPath(join(__dirname, 'ocr-worker.js'))
+  if (!existsSync(scriptPath)) {
+    throw new Error(`OCR worker 脚本不存在: ${scriptPath}`)
+  }
+  return scriptPath
+}
+
+const OCR_WORKER_MODULE_NAMES = [
+  'onnxruntime-node',
+  'onnxruntime-common',
+  'paddleocr',
+  'jpeg-js',
+  'fast-png',
+] as const
+
+function resolvePackagedNodeModuleSearchPaths(): string[] {
+  if (!isPackagedApp()) return []
+
+  const paths = new Set<string>()
+  for (const moduleName of OCR_WORKER_MODULE_NAMES) {
+    try {
+      const packageJsonPath = resolveAsarUnpackedPath(require.resolve(`${moduleName}/package.json`))
+      if (existsSync(packageJsonPath)) {
+        paths.add(dirname(dirname(packageJsonPath)))
+      }
+    } catch (error) {
+      console.warn(`[ocr] resolve packaged module path failed: ${moduleName}`, error)
+    }
+  }
+  return [...paths]
+}
+
 function resolveOnnxRuntimeNativeDir(): string | null {
   try {
     const packageJsonPath = require.resolve('onnxruntime-node/package.json')
-    const packageRoot = dirname(packageJsonPath).replace(
-      /app\.asar([\\/])/,
-      'app.asar.unpacked$1',
-    )
+    const packageRoot = resolveAsarUnpackedPath(dirname(packageJsonPath))
     const nativeDir = join(packageRoot, 'bin', 'napi-v6', process.platform, process.arch)
     return existsSync(nativeDir) ? nativeDir : null
   } catch (error) {
@@ -254,16 +293,20 @@ function createWorkerEnv(nodeInfo: OcrNodeRuntimeInfo): NodeJS.ProcessEnv {
 
   if (nodeInfo.usingElectronAsNode) {
     env.ELECTRON_RUN_AS_NODE = '1'
+  } else if (isPackagedApp()) {
+    const moduleSearchPaths = resolvePackagedNodeModuleSearchPaths()
+    if (moduleSearchPaths.length > 0) {
+      const existing = env.NODE_PATH ?? ''
+      env.NODE_PATH = [...moduleSearchPaths, existing].filter(Boolean).join(delimiter)
+    }
   }
 
-  if (process.platform === 'win32') {
-    const nativeDir = resolveOnnxRuntimeNativeDir()
-    if (nativeDir) {
-      const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path') ?? 'PATH'
-      const pathEntries = (env[pathKey] ?? '').split(delimiter).filter(Boolean)
-      if (!pathEntries.some((entry) => entry.toLowerCase() === nativeDir.toLowerCase())) {
-        env[pathKey] = [nativeDir, ...pathEntries].join(delimiter)
-      }
+  const nativeDir = resolveOnnxRuntimeNativeDir()
+  if (nativeDir) {
+    const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path') ?? 'PATH'
+    const pathEntries = (env[pathKey] ?? '').split(delimiter).filter(Boolean)
+    if (!pathEntries.some((entry) => entry.toLowerCase() === nativeDir.toLowerCase())) {
+      env[pathKey] = [nativeDir, ...pathEntries].join(delimiter)
     }
   }
 
@@ -288,9 +331,10 @@ function getWorker(): ChildProcess {
     }
     validateCustomNodePath(nodeInfo.resolvedPath)
   }
-  console.log('[ocr] starting worker process:', nodeInfo)
+  const workerScriptPath = resolveWorkerScriptPath()
+  console.log('[ocr] starting worker process:', { ...nodeInfo, workerScriptPath })
   const workerOutput = { stdout: '', stderr: '' }
-  worker = fork(join(__dirname, 'ocr-worker.js'), [], {
+  worker = fork(workerScriptPath, [], {
     execPath: nodeInfo.resolvedPath,
     env: createWorkerEnv(nodeInfo),
     execArgv: process.execArgv.filter((arg) => !arg.startsWith('--inspect')),

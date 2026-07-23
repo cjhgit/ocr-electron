@@ -21,6 +21,7 @@ files:
   - '!**/node_modules/remend/**'
 asarUnpack:
   - resources/**
+  - node_modules/onnxruntime-node/**
 win:
   executableName: 财务助手
   target:

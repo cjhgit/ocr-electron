@@ -1,5 +1,6 @@
 import { fork, spawnSync, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { basename, delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { OcrModelVariant } from './config'
@@ -66,6 +67,7 @@ type OcrWorkerRequestPayload =
     }
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+const require = createRequire(import.meta.url)
 const OCR_REQUEST_TIMEOUT_MS = 5 * 60_000
 
 let defaultRuntime: OcrRuntimeOptions | null = null
@@ -190,6 +192,42 @@ function formatWorkerFailure(prefix: string, code: number | null, signal: NodeJS
   return new Error(`${prefix}（${reason}）`)
 }
 
+function resolveOnnxRuntimeNativeDir(): string | null {
+  try {
+    const packageJsonPath = require.resolve('onnxruntime-node/package.json')
+    const packageRoot = dirname(packageJsonPath).replace(
+      /app\.asar([\\/])/,
+      'app.asar.unpacked$1',
+    )
+    const nativeDir = join(packageRoot, 'bin', 'napi-v6', process.platform, process.arch)
+    return existsSync(nativeDir) ? nativeDir : null
+  } catch (error) {
+    console.warn('[ocr] resolve onnxruntime-node native dir failed:', error)
+    return null
+  }
+}
+
+function createWorkerEnv(nodeInfo: OcrNodeRuntimeInfo): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env }
+
+  if (nodeInfo.usingElectronAsNode) {
+    env.ELECTRON_RUN_AS_NODE = '1'
+  }
+
+  if (process.platform === 'win32') {
+    const nativeDir = resolveOnnxRuntimeNativeDir()
+    if (nativeDir) {
+      const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path') ?? 'PATH'
+      const pathEntries = (env[pathKey] ?? '').split(delimiter).filter(Boolean)
+      if (!pathEntries.some((entry) => entry.toLowerCase() === nativeDir.toLowerCase())) {
+        env[pathKey] = [nativeDir, ...pathEntries].join(delimiter)
+      }
+    }
+  }
+
+  return env
+}
+
 function getWorker(): ChildProcess {
   if (worker?.connected) return worker
 
@@ -200,12 +238,7 @@ function getWorker(): ChildProcess {
   console.log('[ocr] starting worker process:', nodeInfo)
   worker = fork(join(__dirname, 'ocr-worker.js'), [], {
     execPath: nodeInfo.resolvedPath,
-    env: nodeInfo.usingElectronAsNode
-      ? {
-          ...process.env,
-          ELECTRON_RUN_AS_NODE: '1',
-        }
-      : process.env,
+    env: createWorkerEnv(nodeInfo),
     execArgv: process.execArgv.filter((arg) => !arg.startsWith('--inspect')),
     serialization: 'advanced',
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],

@@ -68,6 +68,11 @@ const TASK_STATUS_LABEL: Record<FinanceCheckTaskStatus, string> = {
   cancelled: '已取消',
 }
 
+const TASK_DISPLAY_STATUS_LABEL: Record<FinanceCheckTaskStatus | 'cancelling', string> = {
+  ...TASK_STATUS_LABEL,
+  cancelling: '取消中',
+}
+
 const RESULT_STATUS_LABEL: Record<FinanceCheckResultStatus, string> = {
   pass: '通过',
   fail: '不通过',
@@ -174,13 +179,14 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
-function StatusBadge({ status }: { status: FinanceCheckTaskStatus | FinanceCheckResultStatus }) {
+function StatusBadge({ status }: { status: FinanceCheckTaskStatus | FinanceCheckResultStatus | 'cancelling' }) {
   const toneClass = {
     pending: 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300',
     running: 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300',
     succeeded: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300',
     failed: 'text-destructive',
     cancelled: 'border-yellow-200 bg-yellow-50 text-yellow-700 dark:border-yellow-900/60 dark:bg-yellow-950/40 dark:text-yellow-300',
+    cancelling: 'border-yellow-200 bg-yellow-50 text-yellow-700 dark:border-yellow-900/60 dark:bg-yellow-950/40 dark:text-yellow-300',
     pass: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300',
     fail: 'text-destructive',
     skip: 'border-yellow-200 bg-yellow-50 text-yellow-700 dark:border-yellow-900/60 dark:bg-yellow-950/40 dark:text-yellow-300',
@@ -189,7 +195,9 @@ function StatusBadge({ status }: { status: FinanceCheckTaskStatus | FinanceCheck
 
   return (
     <Badge variant={status === 'failed' || status === 'fail' || status === 'error' ? 'destructive' : 'outline'} className={toneClass}>
-      {status in TASK_STATUS_LABEL ? TASK_STATUS_LABEL[status as FinanceCheckTaskStatus] : RESULT_STATUS_LABEL[status as FinanceCheckResultStatus]}
+      {status in TASK_DISPLAY_STATUS_LABEL
+        ? TASK_DISPLAY_STATUS_LABEL[status as FinanceCheckTaskStatus | 'cancelling']
+        : RESULT_STATUS_LABEL[status as FinanceCheckResultStatus]}
     </Badge>
   )
 }
@@ -220,18 +228,20 @@ function SummaryText({ task }: { task: FinanceCheckTask }) {
   )
 }
 
-function TaskProgress({ task }: { task: FinanceCheckTask }) {
-  if (task.taskStatus !== 'pending' && task.taskStatus !== 'running') return null
+function TaskProgress({ task, cancelling = false }: { task: FinanceCheckTask; cancelling?: boolean }) {
+  if (!cancelling && task.taskStatus !== 'pending' && task.taskStatus !== 'running') return null
   const percent = task.progressPercent ?? 0
   return (
     <div className="min-w-45">
       <Progress value={Math.max(0, Math.min(100, percent))} className="mb-1" />
       <span className={mutedClass}>
-        {task.taskStatus === 'pending'
-          ? '排队中，等待执行...'
-          : task.totalRows
-            ? `对账中 ${percent}%（${task.processedRows ?? 0} / ${task.totalRows} 行）`
-            : '对账中，正在读取 Excel...'}
+        {cancelling
+          ? '正在取消，请稍候...'
+          : task.taskStatus === 'pending'
+            ? '排队中，等待执行...'
+            : task.totalRows
+              ? `对账中 ${percent}%（${task.processedRows ?? 0} / ${task.totalRows} 行）`
+              : '对账中，正在读取 Excel...'}
       </span>
     </div>
   )
@@ -664,6 +674,7 @@ function FinanceCheckPage({
   const [isDragOver, setIsDragOver] = useState(false)
   const [error, setError] = useState('')
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
+  const [cancellingTaskIds, setCancellingTaskIds] = useState<Set<string>>(() => new Set())
   const [nowMs, setNowMs] = useState(() => Date.now())
   const dragCountRef = useRef(0)
   const pageSize = 10
@@ -681,6 +692,16 @@ function FinanceCheckPage({
       })
       setTasks(data.items)
       setTotal(data.total)
+      setCancellingTaskIds((prev) => {
+        if (prev.size === 0) return prev
+        const next = new Set(prev)
+        for (const task of data.items) {
+          if (next.has(task.id) && task.taskStatus !== 'pending' && task.taskStatus !== 'running') {
+            next.delete(task.id)
+          }
+        }
+        return next.size === prev.size ? prev : next
+      })
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载任务失败')
     } finally {
@@ -694,10 +715,11 @@ function FinanceCheckPage({
 
   useEffect(() => {
     const hasActive = tasks.some((task) => task.taskStatus === 'pending' || task.taskStatus === 'running')
+      || cancellingTaskIds.size > 0
     if (!hasActive) return
     const timer = window.setInterval(() => void refresh(), 3000)
     return () => window.clearInterval(timer)
-  }, [tasks, page, statusFilter])
+  }, [tasks, page, statusFilter, cancellingTaskIds])
 
   useEffect(() => {
     const hasActive = tasks.some((task) => task.taskStatus === 'pending' || task.taskStatus === 'running')
@@ -744,6 +766,31 @@ function FinanceCheckPage({
     }
   }
 
+  async function handleCancelTask(taskId: string) {
+    setCancellingTaskIds((prev) => new Set(prev).add(taskId))
+    setError('')
+    try {
+      await cancelFinanceCheckTask(taskId)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '取消任务失败')
+      setCancellingTaskIds((prev) => {
+        const next = new Set(prev)
+        next.delete(taskId)
+        return next
+      })
+    }
+  }
+
+  function clearCancellingTask(taskId: string) {
+    setCancellingTaskIds((prev) => {
+      if (!prev.has(taskId)) return prev
+      const next = new Set(prev)
+      next.delete(taskId)
+      return next
+    })
+  }
+
   function handleDragEnter(event: DragEvent<HTMLDivElement>) {
     event.preventDefault()
     if (shouldPromptForModel) return
@@ -770,10 +817,16 @@ function FinanceCheckPage({
   }
 
   if (selectedTaskId) {
-    return <FinanceCheckDetail taskId={selectedTaskId} onBack={() => {
-      setSelectedTaskId(null)
-      void refresh()
-    }} />
+    return <FinanceCheckDetail
+      taskId={selectedTaskId}
+      cancelling={cancellingTaskIds.has(selectedTaskId)}
+      onCancel={() => void handleCancelTask(selectedTaskId)}
+      onCancellingResolved={() => clearCancellingTask(selectedTaskId)}
+      onBack={() => {
+        setSelectedTaskId(null)
+        void refresh()
+      }}
+    />
   }
 
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
@@ -783,7 +836,7 @@ function FinanceCheckPage({
       <Card>
         <CardHeader>
           <CardTitle>对账任务</CardTitle>
-          <CardDescription>共 {loading ? '-' : total} 条{tasks.some((task) => task.taskStatus === 'pending' || task.taskStatus === 'running') ? ' · 执行中任务将自动刷新' : ''}</CardDescription>
+          <CardDescription>共 {loading ? '-' : total} 条{(tasks.some((task) => task.taskStatus === 'pending' || task.taskStatus === 'running') || cancellingTaskIds.size > 0) ? ' · 执行中任务将自动刷新' : ''}</CardDescription>
           <CardAction>
           <div className={actionsClass}>
             <input ref={fileInputRef} type="file" accept=".xlsx" hidden disabled={shouldPromptForModel} onChange={(event) => void uploadFile(event.target.files?.[0] ?? null)} />
@@ -860,12 +913,14 @@ function FinanceCheckPage({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {tasks.map((task) => (
+              {tasks.map((task) => {
+                const isCancelling = cancellingTaskIds.has(task.id)
+                return (
                 <TableRow key={task.id}>
                   <TableCell><Button type="button" variant="link" className="h-auto min-h-0 max-w-80 justify-start truncate p-0" onClick={() => setSelectedTaskId(task.id)}>{task.sourceFileName}</Button></TableCell>
-                  <TableCell><StatusBadge status={task.taskStatus} /></TableCell>
+                  <TableCell><StatusBadge status={isCancelling ? 'cancelling' : task.taskStatus} /></TableCell>
                   <TableCell className="w-55 max-w-55"><ErrorMessageCell message={task.errorMessage} /></TableCell>
-                  <TableCell><TaskProgress task={task} />{task.taskStatus === 'succeeded' && <SummaryText task={task} />}</TableCell>
+                  <TableCell><TaskProgress task={task} cancelling={isCancelling} />{task.taskStatus === 'succeeded' && <SummaryText task={task} />}</TableCell>
                   <TableCell>{formatTaskDuration(task, nowMs)}</TableCell>
                   <TableCell>{formatOcrModelVariant(task.modelVariant)}</TableCell>
                   <TableCell>{formatTime(task.createdAt)}</TableCell>
@@ -874,13 +929,20 @@ function FinanceCheckPage({
                       <Button type="button" variant="ghost" size="sm" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
                       <Button type="button" variant="ghost" size="sm" onClick={() => void handleOpenSourceFile(task.id)}><FolderOpen size={14} />原文件</Button>
                       {task.taskStatus === 'succeeded' && task.resultDownloadUrl && <a className={buttonVariants({ variant: 'ghost', size: 'sm' })} href={task.resultDownloadUrl}><Download size={14} />下载</a>}
-                      {(task.taskStatus === 'pending' || task.taskStatus === 'running')
-                        ? <Button type="button" variant="ghost" size="sm" className={dangerClass} onClick={async () => { await cancelFinanceCheckTask(task.id); await refresh() }}><XCircle size={14} />取消</Button>
-                        : <Button type="button" variant="ghost" size="sm" className={dangerClass} onClick={async () => { if (window.confirm(`确定删除「${task.sourceFileName}」吗？`)) { await deleteFinanceCheckTask(task.id); await refresh() } }}><Trash2 size={14} />删除</Button>}
+                      {(task.taskStatus === 'pending' || task.taskStatus === 'running') && !isCancelling
+                        ? (
+                            <Button type="button" variant="ghost" size="sm" className={dangerClass} onClick={() => void handleCancelTask(task.id)}>
+                              <XCircle size={14} />取消
+                            </Button>
+                          )
+                        : (task.taskStatus !== 'pending' && task.taskStatus !== 'running')
+                          ? <Button type="button" variant="ghost" size="sm" className={dangerClass} onClick={async () => { if (window.confirm(`确定删除「${task.sourceFileName}」吗？`)) { await deleteFinanceCheckTask(task.id); await refresh() } }}><Trash2 size={14} />删除</Button>
+                          : null}
                     </div>
                   </TableCell>
                 </TableRow>
-              ))}
+                )
+              })}
               {!loading && tasks.length === 0 && <TableRow><TableCell colSpan={8} className={emptyCellClass}>暂无对账任务，点击“上传表格”开始</TableCell></TableRow>}
             </TableBody>
           </Table>
@@ -896,7 +958,7 @@ function FinanceCheckPage({
   )
 }
 
-function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => void }) {
+function FinanceCheckDetail({ taskId, onBack, onCancel, onCancellingResolved, cancelling }: { taskId: string; onBack: () => void; onCancel: () => void; onCancellingResolved: () => void; cancelling: boolean }) {
   const [task, setTask] = useState<FinanceCheckTask | null>(null)
   const [items, setItems] = useState<FinanceCheckTaskItem[]>([])
   const [itemTotal, setItemTotal] = useState(0)
@@ -931,16 +993,23 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
   }, [taskId, itemPage, itemStatusFilter])
 
   useEffect(() => {
-    if (task?.taskStatus !== 'pending' && task?.taskStatus !== 'running') return
+    if (!cancelling && task?.taskStatus !== 'pending' && task?.taskStatus !== 'running') return
     const timer = window.setInterval(() => void refresh(), 3000)
     return () => window.clearInterval(timer)
-  }, [task?.taskStatus, taskId, itemPage, itemStatusFilter])
+  }, [task?.taskStatus, cancelling, taskId, itemPage, itemStatusFilter])
 
   useEffect(() => {
-    if (task?.taskStatus !== 'pending' && task?.taskStatus !== 'running') return
+    if (!cancelling || !task) return
+    if (task.taskStatus !== 'pending' && task.taskStatus !== 'running') {
+      onCancellingResolved()
+    }
+  }, [cancelling, onCancellingResolved, task?.taskStatus])
+
+  useEffect(() => {
+    if (!cancelling && task?.taskStatus !== 'pending' && task?.taskStatus !== 'running') return
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
     return () => window.clearInterval(timer)
-  }, [task?.taskStatus])
+  }, [cancelling, task?.taskStatus])
 
   const pageCount = Math.max(1, Math.ceil(itemTotal / itemPageSize))
 
@@ -961,14 +1030,18 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
             <Button type="button" variant="ghost" size="icon" onClick={onBack} aria-label="返回"><ArrowLeft size={18} /></Button>
             <div>
               <CardTitle>{task?.sourceFileName ?? '对账任务详情'}</CardTitle>
-              {task && <div className="mt-2 flex items-center gap-2"><StatusBadge status={task.taskStatus} /></div>}
+              {task && <div className="mt-2 flex items-center gap-2"><StatusBadge status={cancelling ? 'cancelling' : task.taskStatus} /></div>}
             </div>
           </div>
           <CardAction>
           <div className={actionsClass}>
             {task && <Button type="button" variant="outline" onClick={() => void handleOpenSourceFile()}><FolderOpen size={16} />查看原文件</Button>}
             {task?.resultDownloadUrl && <a className={buttonVariants({ variant: 'outline' })} href={task.resultDownloadUrl}><Download size={16} />下载结果</a>}
-            {task && (task.taskStatus === 'pending' || task.taskStatus === 'running') && <Button type="button" variant="outline" className={dangerClass} onClick={async () => { await cancelFinanceCheckTask(taskId); await refresh() }}><XCircle size={16} />取消任务</Button>}
+            {task && (task.taskStatus === 'pending' || task.taskStatus === 'running') && !cancelling && (
+              <Button type="button" variant="outline" className={dangerClass} onClick={onCancel}>
+                <XCircle size={16} />取消任务
+              </Button>
+            )}
             {task && task.taskStatus !== 'pending' && task.taskStatus !== 'running' && <Button type="button" variant="outline" className={dangerClass} onClick={async () => { if (window.confirm(`确定删除「${task.sourceFileName}」吗？`)) { await deleteFinanceCheckTask(taskId); onBack() } }}><Trash2 size={16} />删除任务</Button>}
             <Button type="button" variant="outline" onClick={() => void refresh()}><RefreshCw size={16} />刷新</Button>
           </div>
@@ -989,7 +1062,7 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
             <Info label="对账汇总" value={task.summary ? formatCheckSummary(task.summary) : '-'} />
           </div>
         )}
-        {task && <TaskProgress task={task} />}
+        {task && <TaskProgress task={task} cancelling={cancelling} />}
         {task?.errorMessage && <p className={errorTextClass}>{task.errorMessage}</p>}
         </CardContent>
       </Card>

@@ -1,8 +1,8 @@
-import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-const LOG_DIR = join(homedir(), '.finance-checker', 'log')
+export const LOG_DIR = join(homedir(), '.finance-checker', 'log')
 const ERROR_LOG_PATH = join(LOG_DIR, 'error.log')
 
 function ensureLogDir(): void {
@@ -35,6 +35,16 @@ export function writeErrorLog(message: string): void {
     appendFileSync(ERROR_LOG_PATH, `[${new Date().toISOString()}] ${message}\n`, 'utf8')
   } catch {
     // ignore logging failures
+  }
+}
+
+export function clearErrorLogs(): void {
+  if (!existsSync(LOG_DIR)) {
+    return
+  }
+
+  for (const name of readdirSync(LOG_DIR)) {
+    unlinkSync(join(LOG_DIR, name))
   }
 }
 

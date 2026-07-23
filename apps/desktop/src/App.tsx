@@ -36,7 +36,9 @@ import {
   fetchServerModelInfo,
   fetchAppConfig,
   loadImagePixels,
+  clearErrorLogs,
   openConfigFolder,
+  openLogFolder,
   recognizeImage,
   saveAppConfig,
   type AppConfig,
@@ -353,6 +355,8 @@ function OcrSettings({
   const [modelStatusLoading, setModelStatusLoading] = useState(false)
   const [modelDownloading, setModelDownloading] = useState(false)
   const [openingConfigFolder, setOpeningConfigFolder] = useState(false)
+  const [openingLogFolder, setOpeningLogFolder] = useState(false)
+  const [clearingLogs, setClearingLogs] = useState(false)
   const [error, setError] = useState('')
   const selectedModelOption = OCR_MODEL_OPTIONS.find((option) => option.value === variant) ?? OCR_MODEL_OPTIONS[0]
   const settingsTabs = useMemo(
@@ -415,6 +419,33 @@ function OcrSettings({
       setError(err instanceof Error ? err.message : '打开配置文件夹失败')
     } finally {
       setOpeningConfigFolder(false)
+    }
+  }
+
+  async function handleOpenLogFolder() {
+    setOpeningLogFolder(true)
+    setError('')
+    try {
+      await openLogFolder()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '打开日志文件夹失败')
+    } finally {
+      setOpeningLogFolder(false)
+    }
+  }
+
+  async function handleClearLogs() {
+    if (!window.confirm('确定清空所有日志文件吗？')) {
+      return
+    }
+    setClearingLogs(true)
+    setError('')
+    try {
+      await clearErrorLogs()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '清空日志失败')
+    } finally {
+      setClearingLogs(false)
     }
   }
 
@@ -632,6 +663,23 @@ function OcrSettings({
                 <Button type="button" variant="outline" onClick={() => void handleOpenConfigFolder()} disabled={openingConfigFolder}>
                   <FolderOpen size={16} />{openingConfigFolder ? '打开中...' : '打开配置文件夹'}
                 </Button>
+                </CardAction>
+              </CardHeader>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>日志文件</CardTitle>
+                <CardDescription>~/.finance-checker/log/error.log</CardDescription>
+                <CardAction>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" variant="outline" onClick={() => void handleOpenLogFolder()} disabled={openingLogFolder}>
+                      <FolderOpen size={16} />{openingLogFolder ? '打开中...' : '显示日志文件'}
+                    </Button>
+                    <Button type="button" variant="outline" className="text-destructive hover:text-destructive" onClick={() => void handleClearLogs()} disabled={clearingLogs}>
+                      <Trash2 size={16} />{clearingLogs ? '清空中...' : '清空日志'}
+                    </Button>
+                  </div>
                 </CardAction>
               </CardHeader>
             </Card>

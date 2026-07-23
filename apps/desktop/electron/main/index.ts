@@ -35,7 +35,7 @@ import {
   sendFinanceCheckImage,
   type FinanceCheckTaskStatus,
 } from './finance-checker/service'
-import { initErrorLogging } from './logger'
+import { clearErrorLogs, initErrorLogging, LOG_DIR } from './logger'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -283,6 +283,14 @@ function appConfigResponse(config: AppConfig) {
 async function openConfigFolder(): Promise<void> {
   await mkdir(CONFIG_DIR, { recursive: true })
   const error = await shell.openPath(CONFIG_DIR)
+  if (error) {
+    throw new Error(error)
+  }
+}
+
+async function openLogFolder(): Promise<void> {
+  await mkdir(LOG_DIR, { recursive: true })
+  const error = await shell.openPath(LOG_DIR)
   if (error) {
     throw new Error(error)
   }
@@ -540,6 +548,22 @@ function createHttpServer() {
 
   router.post('/api/settings/config/open-folder', async (ctx) => {
     await openConfigFolder()
+    ctx.body = {
+      code: 0,
+      data: { ok: true },
+    }
+  })
+
+  router.post('/api/settings/log/open-folder', async (ctx) => {
+    await openLogFolder()
+    ctx.body = {
+      code: 0,
+      data: { ok: true },
+    }
+  })
+
+  router.post('/api/settings/log/clear', async (ctx) => {
+    clearErrorLogs()
     ctx.body = {
       code: 0,
       data: { ok: true },

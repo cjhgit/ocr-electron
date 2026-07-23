@@ -178,3 +178,17 @@ export async function openConfigFolder(): Promise<void> {
   })
   await parseApiResponse<{ ok: boolean }>(response, '打开配置文件夹失败')
 }
+
+export async function openLogFolder(): Promise<void> {
+  const response = await fetch(`${OCR_API_BASE}/api/settings/log/open-folder`, {
+    method: 'POST',
+  })
+  await parseApiResponse<{ ok: boolean }>(response, '打开日志文件夹失败')
+}
+
+export async function clearErrorLogs(): Promise<void> {
+  const response = await fetch(`${OCR_API_BASE}/api/settings/log/clear`, {
+    method: 'POST',
+  })
+  await parseApiResponse<{ ok: boolean }>(response, '清空日志失败')
+}

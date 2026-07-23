@@ -8,10 +8,10 @@ const HEADER_ALIASES = {
   merchantName: ['商家名称'],
   pusher: ['推单人员'],
   couponCode: ['核销券码'],
-  paymentImage: ['实付券码', '实付券码图'],
+  paymentImage: ['实付券码', '实付券码图', '实付券码截图', '一键买单或智能点餐'],
   expectedPaidAmount: ['推单实付金额'],
   expectedMerchantAmount: ['商家实收', '商家实收金额'],
-  merchantImage: ['商家实收图'],
+  merchantImage: ['商家实收图', '商家实收截图', '实收截图'],
   remark: ['备注'],
 } as const
 
@@ -46,7 +46,11 @@ const PROCESSING_REQUIRED_FIELDS: HeaderField[] = [
 ]
 
 function normalizeHeader(value: unknown): string {
-  return value == null ? '' : String(value).trim()
+  if (value == null) return ''
+  return String(value)
+    .trim()
+    .replace(/\u52b5/g, '\u5238') // 劵 → 券
+    .replace(/\s+/g, '')
 }
 
 function buildHeaderMap(headers: unknown[]): Partial<Record<HeaderField, number>> {

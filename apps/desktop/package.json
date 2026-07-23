@@ -1,7 +1,7 @@
 {
   "name": "flow-chat",
   "productName": "财务助手",
-  "version": "26.723.3",
+  "version": "26.723.4",
   "main": "out/main/index.js",
   "description": "财务助手",
   "author": "Yunser",

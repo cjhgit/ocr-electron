@@ -8,6 +8,25 @@ import { initErrorLogging } from '../logger'
 
 initErrorLogging('ocr-worker')
 
+function notifyFatalError(error: unknown): void {
+  const message = error instanceof Error ? error.message : 'OCR 子进程发生未捕获异常'
+  const stack = error instanceof Error ? error.stack : undefined
+  process.send?.({
+    type: 'fatal',
+    error: { message, stack },
+  })
+}
+
+process.on('uncaughtException', (error) => {
+  console.error('[ocr-worker] uncaught exception:', error)
+  notifyFatalError(error)
+})
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[ocr-worker] unhandled rejection:', reason)
+  notifyFatalError(reason)
+})
+
 type OcrWorkerRequest =
   | {
       id: number

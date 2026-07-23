@@ -40,7 +40,15 @@ type OcrWorkerFailure = {
   }
 }
 
-type OcrWorkerResponse = OcrWorkerSuccess | OcrWorkerFailure
+type OcrWorkerFatal = {
+  type: 'fatal'
+  error: {
+    message: string
+    stack?: string
+  }
+}
+
+type OcrWorkerResponse = OcrWorkerSuccess | OcrWorkerFailure | OcrWorkerFatal
 
 type OcrWorkerRequest =
   | {
@@ -187,9 +195,43 @@ export function resolveOcrNodeRuntimeInfo(config: OcrNodeConfig = nodeConfig): O
   }
 }
 
-function formatWorkerFailure(prefix: string, code: number | null, signal: NodeJS.Signals | null): Error {
+const WORKER_OUTPUT_MAX_CHARS = 8_192
+
+function trimWorkerOutput(text: string): string {
+  const normalized = text.replace(/\r\n/g, '\n').trim()
+  if (normalized.length <= WORKER_OUTPUT_MAX_CHARS) return normalized
+  return `...(truncated)\n${normalized.slice(-WORKER_OUTPUT_MAX_CHARS)}`
+}
+
+function formatWorkerFailure(
+  prefix: string,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  output?: string,
+): Error {
   const reason = signal ? `signal=${signal}` : `code=${code ?? 'unknown'}`
-  return new Error(`${prefix}（${reason}）`)
+  const detail = output ? `\n${output}` : ''
+  return new Error(`${prefix}（${reason}）${detail}`)
+}
+
+function validateCustomNodePath(nodePath: string): void {
+  if (!existsSync(nodePath)) {
+    throw new Error(`自定义 Node.js 路径不存在: ${nodePath}`)
+  }
+
+  const probe = spawnSync(nodePath, ['-p', 'process.version'], {
+    encoding: 'utf8',
+    timeout: 5000,
+    windowsHide: true,
+  })
+  if (probe.error || probe.status !== 0) {
+    const detail = trimWorkerOutput(
+      [probe.stderr, probe.stdout, probe.error?.message].filter(Boolean).join('\n'),
+    )
+    throw new Error(
+      `自定义 Node.js 无法运行: ${nodePath}${detail ? `\n${detail}` : ''}`,
+    )
+  }
 }
 
 function resolveOnnxRuntimeNativeDir(): string | null {
@@ -228,14 +270,26 @@ function createWorkerEnv(nodeInfo: OcrNodeRuntimeInfo): NodeJS.ProcessEnv {
   return env
 }
 
+function appendWorkerOutput(buffer: { stdout: string; stderr: string }, stream: 'stdout' | 'stderr', chunk: Buffer | string): void {
+  const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+  buffer[stream] += text
+  if (buffer[stream].length > WORKER_OUTPUT_MAX_CHARS * 2) {
+    buffer[stream] = buffer[stream].slice(-WORKER_OUTPUT_MAX_CHARS * 2)
+  }
+}
+
 function getWorker(): ChildProcess {
   if (worker?.connected) return worker
 
   const nodeInfo = resolveOcrNodeRuntimeInfo()
-  if (nodeInfo.mode === 'custom' && !nodeInfo.resolvedPath) {
-    throw new Error('请填写自定义 Node.js 路径')
+  if (nodeInfo.mode === 'custom') {
+    if (!nodeInfo.resolvedPath) {
+      throw new Error('请填写自定义 Node.js 路径')
+    }
+    validateCustomNodePath(nodeInfo.resolvedPath)
   }
   console.log('[ocr] starting worker process:', nodeInfo)
+  const workerOutput = { stdout: '', stderr: '' }
   worker = fork(join(__dirname, 'ocr-worker.js'), [], {
     execPath: nodeInfo.resolvedPath,
     env: createWorkerEnv(nodeInfo),
@@ -244,22 +298,35 @@ function getWorker(): ChildProcess {
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   })
   worker.stdout?.on('data', (chunk) => {
+    appendWorkerOutput(workerOutput, 'stdout', chunk)
     process.stdout.write(`[ocr-worker:${worker?.pid ?? 'unknown'}] ${chunk}`)
   })
   worker.stderr?.on('data', (chunk) => {
+    appendWorkerOutput(workerOutput, 'stderr', chunk)
     process.stderr.write(`[ocr-worker:${worker?.pid ?? 'unknown'}] ${chunk}`)
   })
   worker.on('message', (message: OcrWorkerResponse) => {
-    const pending = pendingRequests.get(message.id)
-    if (!pending) return
-    pendingRequests.delete(message.id)
-    clearTimeout(pending.timeout)
-    if (message.ok) {
-      pending.resolve(message.result)
+    if ('type' in message && message.type === 'fatal') {
+      const error = new Error(message.error.message)
+      error.stack = message.error.stack
+      console.error('[ocr] worker fatal error:', error)
+      rejectAllPending(error)
+      worker?.kill()
+      worker = null
       return
     }
-    const error = new Error(message.error.message)
-    error.stack = message.error.stack
+
+    const response = message as OcrWorkerSuccess | OcrWorkerFailure
+    const pending = pendingRequests.get(response.id)
+    if (!pending) return
+    pendingRequests.delete(response.id)
+    clearTimeout(pending.timeout)
+    if (response.ok) {
+      pending.resolve(response.result)
+      return
+    }
+    const error = new Error(response.error.message)
+    error.stack = response.error.stack
     pending.reject(error)
   })
   worker.on('error', (error) => {
@@ -268,9 +335,12 @@ function getWorker(): ChildProcess {
     worker = null
   })
   worker.on('exit', (code, signal) => {
-    console.error('[ocr] worker process exited:', { code, signal })
+    const output = trimWorkerOutput(
+      [workerOutput.stderr, workerOutput.stdout].filter(Boolean).join('\n'),
+    )
+    console.error('[ocr] worker process exited:', { code, signal, output: output || undefined })
     if (code !== 0 || pendingRequests.size > 0) {
-      rejectAllPending(formatWorkerFailure('OCR 子进程异常退出', code, signal))
+      rejectAllPending(formatWorkerFailure('OCR 子进程异常退出', code, signal, output || undefined))
     }
     worker = null
   })

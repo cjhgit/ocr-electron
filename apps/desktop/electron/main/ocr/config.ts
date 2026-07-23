@@ -1,6 +1,6 @@
 import type { PaddleOcrModelPresetName } from 'paddleocr'
 
-export type OcrModelVariant = 'server' | 'v6_small' | 'v6_medium'
+export type OcrModelVariant = 'v5_server' | 'v6_small' | 'v6_medium'
 
 export type ModelAsset = {
   preset: PaddleOcrModelPresetName
@@ -11,7 +11,7 @@ export type ModelAsset = {
 }
 
 export const MODEL_ASSETS: Record<OcrModelVariant, ModelAsset> = {
-  server: {
+  v5_server: {
     preset: 'PP-OCRv5_server',
     dir: 'ppocr_v5_server',
     det: 'PP-OCRv5_server_det_infer.onnx',
@@ -38,6 +38,12 @@ export function getModelAsset(variant: OcrModelVariant): ModelAsset {
   return MODEL_ASSETS[variant]
 }
 
+export function normalizeOcrModelVariant(value: unknown): OcrModelVariant {
+  if (value === 'server' || value === 'v5_server') return 'v5_server'
+  if (value === 'v6_small' || value === 'v6_medium') return value
+  return 'v5_server'
+}
+
 export function isOcrModelVariant(value: unknown): value is OcrModelVariant {
-  return value === 'server' || value === 'v6_small' || value === 'v6_medium'
+  return value === 'v5_server' || value === 'v6_small' || value === 'v6_medium'
 }

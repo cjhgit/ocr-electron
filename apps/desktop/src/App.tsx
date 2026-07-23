@@ -26,6 +26,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from './components/u
 import { Input } from './components/ui/input'
 import { NativeSelect, NativeSelectOption } from './components/ui/native-select'
 import { Progress } from './components/ui/progress'
+import { RadioGroup, RadioGroupItem } from './components/ui/radio-group'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs'
 import { Textarea } from './components/ui/textarea'
@@ -37,6 +38,8 @@ import {
   openConfigFolder,
   recognizeImage,
   saveAppConfig,
+  type AppConfig,
+  type OcrNodeMode,
   type OcrModelVariant,
   type OcrServerModelInfo,
 } from './lib/ocr-api'
@@ -88,6 +91,12 @@ const ITEM_STATUS_OPTIONS: Array<{ value: FinanceCheckResultStatus | 'all'; labe
   { value: 'error', label: '异常' },
 ]
 
+const OCR_MODEL_LABEL: Record<OcrModelVariant, string> = {
+  v5_server: 'v5_server',
+  v6_small: 'v6_small',
+  v6_medium: 'v6_medium',
+}
+
 type SettingsTab = 'model' | 'debug' | 'about'
 
 const pageShellClass = 'mx-auto flex min-h-screen w-full max-w-[1600px] flex-col gap-5 p-6 max-sm:p-4'
@@ -120,6 +129,10 @@ function formatTaskDuration(task: FinanceCheckTask, nowMs: number): string {
     return formatDuration(nowMs - new Date(task.createdAt).getTime())
   }
   return formatDuration(task.durationMs)
+}
+
+function formatOcrModelVariant(variant: OcrModelVariant | null): string {
+  return variant ? OCR_MODEL_LABEL[variant] : '-'
 }
 
 function formatBytes(bytes: number): string {
@@ -252,20 +265,30 @@ function OcrSettings({
   modelRoot,
   variant,
   financeCheckRowConcurrency,
+  ocrNodeMode,
+  ocrNodePath,
+  ocrNodeInfo,
   configPath,
   onModelRootChange,
   onVariantChange,
   onFinanceCheckRowConcurrencyChange,
+  onOcrNodeModeChange,
+  onOcrNodePathChange,
   onConfigChange,
   onModelInfoChange,
 }: {
   modelRoot: string
   variant: OcrModelVariant
   financeCheckRowConcurrency: number
+  ocrNodeMode: OcrNodeMode
+  ocrNodePath: string
+  ocrNodeInfo: AppConfig['ocrNodeInfo'] | null
   configPath: string
   onModelRootChange: (value: string) => void
   onVariantChange: (value: OcrModelVariant) => void
   onFinanceCheckRowConcurrencyChange: (value: number) => void
+  onOcrNodeModeChange: (value: OcrNodeMode) => void
+  onOcrNodePathChange: (value: string) => void
   onConfigChange: (modelRoot: string, variant: OcrModelVariant, financeCheckRowConcurrency: number) => void
   onModelInfoChange: (value: OcrServerModelInfo) => void
 }) {
@@ -385,7 +408,7 @@ function OcrSettings({
       </TabsList>
 
       <div className="min-w-0">
-        <TabsContent value="model">
+        <TabsContent value="model" className={pageStackClass}>
           <Card>
             <CardHeader>
               <CardTitle>模型配置</CardTitle>
@@ -404,7 +427,7 @@ function OcrSettings({
             <label className={fieldClass}>
               <span>模型类型</span>
               <NativeSelect value={variant} onChange={(event) => onVariantChange(event.target.value as OcrModelVariant)} className="w-full">
-                <NativeSelectOption value="server">server（高精度）</NativeSelectOption>
+                <NativeSelectOption value="v5_server">v5_server（高精度）</NativeSelectOption>
                 <NativeSelectOption value="v6_small">v6_small</NativeSelectOption>
                 <NativeSelectOption value="v6_medium">v6_medium</NativeSelectOption>
               </NativeSelect>
@@ -431,6 +454,62 @@ function OcrSettings({
               </div>
             )}
             {!modelInfo && modelStatusLoading && <p className={mutedClass}>正在检测模型文件...</p>}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Node.js 配置</CardTitle>
+              <CardDescription>
+                当前使用：{ocrNodeInfo?.resolvedPath || '未检测'}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className={cardStackClass}>
+              <RadioGroup
+                value={ocrNodeMode}
+                onValueChange={(value) => onOcrNodeModeChange(value as OcrNodeMode)}
+                className="grid gap-3 sm:grid-cols-2"
+              >
+                <label className="flex min-h-16 cursor-pointer items-start gap-3 rounded-lg border p-3">
+                  <RadioGroupItem value="auto" />
+                  <span className="grid gap-1">
+                    <strong className="text-sm font-medium">自动</strong>
+                    <span className="text-xs text-muted-foreground">按环境变量、NVM、PATH 自动查找系统 Node</span>
+                  </span>
+                </label>
+                <label className="flex min-h-16 cursor-pointer items-start gap-3 rounded-lg border p-3">
+                  <RadioGroupItem value="custom" />
+                  <span className="grid gap-1">
+                    <strong className="text-sm font-medium">自定义</strong>
+                    <span className="text-xs text-muted-foreground">使用下面填写的 Node 可执行文件路径</span>
+                  </span>
+                </label>
+              </RadioGroup>
+              <label className={fieldClass}>
+                <span>Node.js 路径</span>
+                <Input
+                  value={ocrNodePath}
+                  onChange={(event) => onOcrNodePathChange(event.target.value)}
+                  placeholder="/path/to/node"
+                  disabled={ocrNodeMode !== 'custom'}
+                />
+              </label>
+              {ocrNodeInfo && (
+                <div className="grid gap-2 rounded-lg border bg-muted p-3 text-xs">
+                  <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-3">
+                    <span className="text-muted-foreground">运行方式</span>
+                    <strong className="font-semibold text-foreground">{ocrNodeInfo.source === 'custom' ? '自定义 Node.js' : ocrNodeInfo.usingElectronAsNode ? 'Electron 自带 Node.js' : '系统 Node.js'}</strong>
+                  </div>
+                  <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-3">
+                    <span className="text-muted-foreground">来源</span>
+                    <strong className="font-semibold text-foreground">{ocrNodeInfo.source}</strong>
+                  </div>
+                  <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-3">
+                    <span className="text-muted-foreground">解析路径</span>
+                    <strong className="font-semibold text-foreground [overflow-wrap:anywhere]">{ocrNodeInfo.resolvedPath}</strong>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -527,7 +606,7 @@ function FinanceCheckPage({
   const dragCountRef = useRef(0)
   const pageSize = 10
   const shouldPromptForModel =
-    !modelRoot.trim() || (variant === 'server' && modelInfo?.modelRoot === modelRoot.trim() && !modelInfo.ready)
+    !modelRoot.trim() || (variant === 'v5_server' && modelInfo?.modelRoot === modelRoot.trim() && !modelInfo.ready)
 
   async function refresh() {
     setLoading(true)
@@ -664,7 +743,7 @@ function FinanceCheckPage({
           <Alert className="min-h-14 items-center max-sm:items-start">
             <InfoIcon size={16} />
             <AlertTitle>请先下载 OCR 模型</AlertTitle>
-            <AlertDescription>对账需要本地 server 模型文件。请前往设置下载模型，下载完成后会自动保存配置。</AlertDescription>
+            <AlertDescription>对账需要本地 v5_server 模型文件。请前往设置下载模型，下载完成后会自动保存配置。</AlertDescription>
             <AlertAction>
               <Button type="button" size="sm" onClick={onOpenSettings}>去设置</Button>
             </AlertAction>
@@ -712,6 +791,7 @@ function FinanceCheckPage({
                 <TableHead>错误信息</TableHead>
                 <TableHead>进度 / 汇总</TableHead>
                 <TableHead>耗时</TableHead>
+                <TableHead>模型</TableHead>
                 <TableHead>创建时间</TableHead>
                 <TableHead>操作</TableHead>
               </TableRow>
@@ -724,6 +804,7 @@ function FinanceCheckPage({
                   <TableCell className="w-55 max-w-55"><ErrorMessageCell message={task.errorMessage} /></TableCell>
                   <TableCell><TaskProgress task={task} />{task.taskStatus === 'succeeded' && <SummaryText task={task} />}</TableCell>
                   <TableCell>{formatTaskDuration(task, nowMs)}</TableCell>
+                  <TableCell>{formatOcrModelVariant(task.modelVariant)}</TableCell>
                   <TableCell>{formatTime(task.createdAt)}</TableCell>
                   <TableCell>
                     <div className={rowActionsClass}>
@@ -737,7 +818,7 @@ function FinanceCheckPage({
                   </TableCell>
                 </TableRow>
               ))}
-              {!loading && tasks.length === 0 && <TableRow><TableCell colSpan={7} className={emptyCellClass}>暂无对账任务，点击“上传表格”开始</TableCell></TableRow>}
+              {!loading && tasks.length === 0 && <TableRow><TableCell colSpan={8} className={emptyCellClass}>暂无对账任务，点击“上传表格”开始</TableCell></TableRow>}
             </TableBody>
           </Table>
         </div>
@@ -837,6 +918,7 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
             <Info label="原始文件" value={task.sourceFileName} />
             <Info label="原始文件路径" value={task.sourcePath} />
             <Info label="结果文件" value={task.resultFileName ?? '-'} />
+            <Info label="模型" value={formatOcrModelVariant(task.modelVariant)} />
             <Info label="创建时间" value={formatTime(task.createdAt)} />
             <Info label="完成时间" value={formatTime(task.finishedAt)} />
             <Info label="耗时" value={formatTaskDuration(task, nowMs)} />
@@ -955,8 +1037,11 @@ function Info({ label, value }: { label: string; value: string }) {
 function App() {
   const [activeTab, setActiveTab] = useState<'finance' | 'settings'>('finance')
   const [modelRoot, setModelRoot] = useState('')
-  const [variant, setVariant] = useState<OcrModelVariant>('server')
+  const [variant, setVariant] = useState<OcrModelVariant>('v5_server')
   const [financeCheckRowConcurrency, setFinanceCheckRowConcurrency] = useState(5)
+  const [ocrNodeMode, setOcrNodeMode] = useState<OcrNodeMode>('auto')
+  const [ocrNodePath, setOcrNodePath] = useState('')
+  const [ocrNodeInfo, setOcrNodeInfo] = useState<AppConfig['ocrNodeInfo'] | null>(null)
   const [configPath, setConfigPath] = useState('')
   const [modelInfo, setModelInfo] = useState<OcrServerModelInfo | null>(null)
   const [configError, setConfigError] = useState('')
@@ -969,6 +1054,9 @@ function App() {
         setModelRoot(config.modelRoot)
         setVariant(config.variant)
         setFinanceCheckRowConcurrency(config.financeCheckRowConcurrency)
+        setOcrNodeMode(config.ocrNodeMode)
+        setOcrNodePath(config.ocrNodePath)
+        setOcrNodeInfo(config.ocrNodeInfo)
         setConfigPath(config.configPath)
         setModelInfo(info)
       } catch (err) {
@@ -992,13 +1080,22 @@ function App() {
     return Math.max(1, Math.min(20, Math.round(value)))
   }
 
-  async function persistConfig(nextModelRoot: string, nextVariant: OcrModelVariant, nextFinanceCheckRowConcurrency: number) {
+  async function persistConfig(
+    nextModelRoot: string,
+    nextVariant: OcrModelVariant,
+    nextFinanceCheckRowConcurrency: number,
+    nextOcrNodeMode: OcrNodeMode = ocrNodeMode,
+    nextOcrNodePath: string = ocrNodePath,
+  ) {
     try {
       const config = await saveAppConfig({
         modelRoot: nextModelRoot,
         variant: nextVariant,
         financeCheckRowConcurrency: nextFinanceCheckRowConcurrency,
+        ocrNodeMode: nextOcrNodeMode,
+        ocrNodePath: nextOcrNodePath,
       })
+      setOcrNodeInfo(config.ocrNodeInfo)
       setConfigPath(config.configPath)
       setConfigError('')
     } catch (err) {
@@ -1020,6 +1117,16 @@ function App() {
     const normalized = normalizeFinanceCheckRowConcurrency(value)
     setFinanceCheckRowConcurrency(normalized)
     void persistConfig(modelRoot, variant, normalized)
+  }
+
+  function handleOcrNodeModeChange(value: OcrNodeMode) {
+    setOcrNodeMode(value)
+    void persistConfig(modelRoot, variant, financeCheckRowConcurrency, value, ocrNodePath)
+  }
+
+  function handleOcrNodePathChange(value: string) {
+    setOcrNodePath(value)
+    void persistConfig(modelRoot, variant, financeCheckRowConcurrency, ocrNodeMode, value)
   }
 
   function handleConfigChange(nextModelRoot: string, nextVariant: OcrModelVariant, nextFinanceCheckRowConcurrency: number) {
@@ -1048,7 +1155,7 @@ function App() {
 
       {activeTab === 'finance'
         ? <FinanceCheckPage modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} modelInfo={modelInfo} onOpenSettings={() => setActiveTab('settings')} />
-        : <OcrSettings modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} configPath={configPath} onModelRootChange={handleModelRootChange} onVariantChange={handleVariantChange} onFinanceCheckRowConcurrencyChange={handleFinanceCheckRowConcurrencyChange} onConfigChange={handleConfigChange} onModelInfoChange={setModelInfo} />}
+        : <OcrSettings modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} ocrNodeMode={ocrNodeMode} ocrNodePath={ocrNodePath} ocrNodeInfo={ocrNodeInfo} configPath={configPath} onModelRootChange={handleModelRootChange} onVariantChange={handleVariantChange} onFinanceCheckRowConcurrencyChange={handleFinanceCheckRowConcurrencyChange} onOcrNodeModeChange={handleOcrNodeModeChange} onOcrNodePathChange={handleOcrNodePathChange} onConfigChange={handleConfigChange} onModelInfoChange={setModelInfo} />}
     </div>
   )
 }

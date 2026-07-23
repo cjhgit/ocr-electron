@@ -1,3 +1,5 @@
+import type { OcrModelVariant } from './ocr-api'
+
 const API_BASE = 'http://localhost:38765'
 
 export type FinanceCheckTaskStatus =
@@ -23,6 +25,7 @@ export type FinanceCheckTask = {
   sourcePath: string
   resultFileName: string | null
   sheetName: string | null
+  modelVariant: OcrModelVariant | null
   tolerance: number
   rowConcurrency: number
   summary: FinanceCheckSummary | null
@@ -79,7 +82,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export async function uploadFinanceCheckTask(payload: {
   file: File
   modelRoot: string
-  variant: 'server' | 'v6_small' | 'v6_medium'
+  variant: OcrModelVariant
   rowConcurrency: number
 }) {
   const formData = new FormData()

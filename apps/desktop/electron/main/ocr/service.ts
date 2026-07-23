@@ -9,6 +9,21 @@ import type {
   OcrRuntimeOptions,
 } from './engine'
 
+export type OcrNodeMode = 'auto' | 'custom'
+
+export type OcrNodeConfig = {
+  mode: OcrNodeMode
+  customPath: string
+}
+
+export type OcrNodeRuntimeInfo = {
+  mode: OcrNodeMode
+  customPath: string
+  resolvedPath: string
+  usingElectronAsNode: boolean
+  source: 'custom' | 'env' | 'nvm' | 'path' | 'shell' | 'electron'
+}
+
 type OcrWorkerSuccess = {
   id: number
   ok: true
@@ -54,6 +69,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const OCR_REQUEST_TIMEOUT_MS = 5 * 60_000
 
 let defaultRuntime: OcrRuntimeOptions | null = null
+let nodeConfig: OcrNodeConfig = {
+  mode: 'auto',
+  customPath: '',
+}
 let worker: ChildProcess | null = null
 let nextRequestId = 1
 const pendingRequests = new Map<number, {
@@ -66,26 +85,74 @@ export function setDefaultOcrRuntime(options: OcrRuntimeOptions) {
   defaultRuntime = options
 }
 
+export function setOcrNodeConfig(config: OcrNodeConfig): void {
+  const normalized = normalizeOcrNodeConfig(config)
+  const changed = normalized.mode !== nodeConfig.mode || normalized.customPath !== nodeConfig.customPath
+  nodeConfig = normalized
+  if (changed && worker) {
+    console.log('[ocr] node config changed, restarting worker process')
+    worker.kill()
+    worker = null
+  }
+}
+
+export function normalizeOcrNodeMode(value: unknown): OcrNodeMode {
+  return value === 'custom' ? 'custom' : 'auto'
+}
+
+export function normalizeOcrNodeConfig(config: Partial<OcrNodeConfig> | null | undefined): OcrNodeConfig {
+  return {
+    mode: normalizeOcrNodeMode(config?.mode),
+    customPath: typeof config?.customPath === 'string' ? config.customPath.trim() : '',
+  }
+}
+
 function isElectronExecPath(execPath: string): boolean {
   return basename(execPath).toLowerCase().includes('electron')
 }
 
-function resolveNodeExecPath(): string {
-  if (!process.versions.electron || !isElectronExecPath(process.execPath)) {
-    return process.execPath
+export function resolveOcrNodeRuntimeInfo(config: OcrNodeConfig = nodeConfig): OcrNodeRuntimeInfo {
+  const normalized = normalizeOcrNodeConfig(config)
+  if (normalized.mode === 'custom') {
+    return {
+      mode: normalized.mode,
+      customPath: normalized.customPath,
+      resolvedPath: normalized.customPath,
+      usingElectronAsNode: false,
+      source: 'custom',
+    }
   }
 
-  const candidates = [
-    process.env.OCR_NODE_EXEC_PATH,
-    process.env.NODE_BINARY,
-    process.env.npm_node_execpath,
-    process.env.NVM_BIN ? join(process.env.NVM_BIN, 'node') : undefined,
-    ...((process.env.PATH ?? '').split(delimiter).map((entry) => entry ? join(entry, 'node') : '')),
+  if (!process.versions.electron || !isElectronExecPath(process.execPath)) {
+    return {
+      mode: normalized.mode,
+      customPath: normalized.customPath,
+      resolvedPath: process.execPath,
+      usingElectronAsNode: false,
+      source: 'env',
+    }
+  }
+
+  const candidates: Array<{ path?: string; source: OcrNodeRuntimeInfo['source'] }> = [
+    { path: process.env.OCR_NODE_EXEC_PATH, source: 'env' },
+    { path: process.env.NODE_BINARY, source: 'env' },
+    { path: process.env.npm_node_execpath, source: 'env' },
+    { path: process.env.NVM_BIN ? join(process.env.NVM_BIN, 'node') : undefined, source: 'nvm' },
+    ...((process.env.PATH ?? '').split(delimiter).map((entry) => ({
+      path: entry ? join(entry, 'node') : undefined,
+      source: 'path' as const,
+    }))),
   ]
 
   for (const candidate of candidates) {
-    if (candidate && candidate !== process.execPath && existsSync(candidate)) {
-      return candidate
+    if (candidate.path && candidate.path !== process.execPath && existsSync(candidate.path)) {
+      return {
+        mode: normalized.mode,
+        customPath: normalized.customPath,
+        resolvedPath: candidate.path,
+        usingElectronAsNode: false,
+        source: candidate.source,
+      }
     }
   }
 
@@ -96,14 +163,26 @@ function resolveNodeExecPath(): string {
     })
     const nodePath = result.stdout.trim().split(/\r?\n/).at(-1)
     if (nodePath && nodePath !== process.execPath && existsSync(nodePath)) {
-      return nodePath
+      return {
+        mode: normalized.mode,
+        customPath: normalized.customPath,
+        resolvedPath: nodePath,
+        usingElectronAsNode: false,
+        source: 'shell',
+      }
     }
   } catch (error) {
     console.warn('[ocr] 通过 shell 查找 Node 失败:', error)
   }
 
   console.warn('[ocr] 未找到独立 Node 可执行文件，将回退到 Electron-as-Node')
-  return process.execPath
+  return {
+    mode: normalized.mode,
+    customPath: normalized.customPath,
+    resolvedPath: process.execPath,
+    usingElectronAsNode: Boolean(process.versions.electron),
+    source: 'electron',
+  }
 }
 
 function formatWorkerFailure(prefix: string, code: number | null, signal: NodeJS.Signals | null): Error {
@@ -114,12 +193,14 @@ function formatWorkerFailure(prefix: string, code: number | null, signal: NodeJS
 function getWorker(): ChildProcess {
   if (worker?.connected) return worker
 
-  const execPath = resolveNodeExecPath()
-  const usingElectronAsNode = execPath === process.execPath && process.versions.electron
-  console.log('[ocr] starting worker process:', { execPath, usingElectronAsNode })
+  const nodeInfo = resolveOcrNodeRuntimeInfo()
+  if (nodeInfo.mode === 'custom' && !nodeInfo.resolvedPath) {
+    throw new Error('请填写自定义 Node.js 路径')
+  }
+  console.log('[ocr] starting worker process:', nodeInfo)
   worker = fork(join(__dirname, 'ocr-worker.js'), [], {
-    execPath,
-    env: usingElectronAsNode
+    execPath: nodeInfo.resolvedPath,
+    env: nodeInfo.usingElectronAsNode
       ? {
           ...process.env,
           ELECTRON_RUN_AS_NODE: '1',

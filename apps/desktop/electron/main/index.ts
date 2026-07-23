@@ -13,8 +13,15 @@ import Koa from 'koa'
 import type { Context } from 'koa'
 import Router from '@koa/router'
 import bodyParser from 'koa-bodyparser'
-import { recognizeText, setDefaultOcrRuntime } from './ocr/service'
-import { getModelAsset, isOcrModelVariant, type OcrModelVariant } from './ocr/config'
+import {
+  normalizeOcrNodeConfig,
+  recognizeText,
+  resolveOcrNodeRuntimeInfo,
+  setDefaultOcrRuntime,
+  setOcrNodeConfig,
+  type OcrNodeMode,
+} from './ocr/service'
+import { getModelAsset, isOcrModelVariant, normalizeOcrModelVariant, type OcrModelVariant } from './ocr/config'
 import { FINANCE_CHECK_ROW_CONCURRENCY } from './finance-checker/constants'
 import {
   cancelFinanceCheckTask,
@@ -116,6 +123,8 @@ type AppConfig = {
   modelRoot: string
   variant: OcrModelVariant
   financeCheckRowConcurrency: number
+  ocrNodeMode: OcrNodeMode
+  ocrNodePath: string
 }
 
 function normalizeFinanceCheckRowConcurrency(value: unknown): number {
@@ -213,10 +222,16 @@ async function logRendererState(label: string) {
 
 function normalizeAppConfig(value: unknown): AppConfig {
   const config = value as Partial<AppConfig> | null
+  const nodeConfig = normalizeOcrNodeConfig({
+    mode: config?.ocrNodeMode,
+    customPath: config?.ocrNodePath,
+  })
   return {
     modelRoot: typeof config?.modelRoot === 'string' ? config.modelRoot : '',
-    variant: isOcrModelVariant(config?.variant) ? config.variant : 'server',
+    variant: normalizeOcrModelVariant(config?.variant),
     financeCheckRowConcurrency: normalizeFinanceCheckRowConcurrency(config?.financeCheckRowConcurrency),
+    ocrNodeMode: nodeConfig.mode,
+    ocrNodePath: nodeConfig.customPath,
   }
 }
 
@@ -226,17 +241,48 @@ async function readAppConfig(): Promise<AppConfig> {
   } catch {
     return {
       modelRoot: '',
-      variant: 'server',
+      variant: 'v5_server',
       financeCheckRowConcurrency: FINANCE_CHECK_ROW_CONCURRENCY,
+      ocrNodeMode: 'auto',
+      ocrNodePath: '',
     }
   }
 }
 
 async function saveAppConfig(config: AppConfig): Promise<AppConfig> {
   const normalized = normalizeAppConfig(config)
+  setOcrNodeConfig({
+    mode: normalized.ocrNodeMode,
+    customPath: normalized.ocrNodePath,
+  })
   await mkdir(CONFIG_DIR, { recursive: true })
   await writeFile(CONFIG_PATH, `${JSON.stringify(normalized, null, 2)}\n`, 'utf-8')
   return normalized
+}
+
+function applyOcrNodeConfig(config: AppConfig): void {
+  setOcrNodeConfig({
+    mode: config.ocrNodeMode,
+    customPath: config.ocrNodePath,
+  })
+}
+
+async function readAppliedAppConfig(): Promise<AppConfig> {
+  const config = await readAppConfig()
+  applyOcrNodeConfig(config)
+  return config
+}
+
+function appConfigResponse(config: AppConfig) {
+  return {
+    ...config,
+    configDir: CONFIG_DIR,
+    configPath: CONFIG_PATH,
+    ocrNodeInfo: resolveOcrNodeRuntimeInfo({
+      mode: config.ocrNodeMode,
+      customPath: config.ocrNodePath,
+    }),
+  }
 }
 
 async function openConfigFolder(): Promise<void> {
@@ -409,7 +455,7 @@ function createHttpServer() {
 
     if (!isOcrModelVariant(variant)) {
       ctx.status = 400
-      ctx.body = { code: -1, message: '模型类型无效，请选择 server、v6_small 或 v6_medium' }
+      ctx.body = { code: -1, message: '模型类型无效，请选择 v5_server、v6_small 或 v6_medium' }
       return
     }
 
@@ -425,6 +471,7 @@ function createHttpServer() {
       return
     }
 
+    await readAppliedAppConfig()
     const pixelData = Buffer.from(image.dataBase64, 'base64')
     const expectedLength = image.width * image.height * 4
 
@@ -453,7 +500,7 @@ function createHttpServer() {
   })
 
   router.get('/api/ocr/server-model', async (ctx) => {
-    const variant = isOcrModelVariant(ctx.query.variant) ? ctx.query.variant : 'server'
+    const variant = normalizeOcrModelVariant(ctx.query.variant)
     ctx.body = {
       code: 0,
       data: await getServerModelFileStatus(variant),
@@ -462,7 +509,7 @@ function createHttpServer() {
 
   router.post('/api/ocr/server-model/download', async (ctx) => {
     const body = ctx.request.body as { variant?: OcrModelVariant }
-    const variant = isOcrModelVariant(body.variant) ? body.variant : 'server'
+    const variant = normalizeOcrModelVariant(body.variant)
     ctx.body = {
       code: 0,
       data: await downloadServerModel(variant),
@@ -470,30 +517,29 @@ function createHttpServer() {
   })
 
   router.get('/api/settings/config', async (ctx) => {
+    const config = await readAppliedAppConfig()
     ctx.body = {
       code: 0,
-      data: {
-        ...(await readAppConfig()),
-        configDir: CONFIG_DIR,
-        configPath: CONFIG_PATH,
-      },
+      data: appConfigResponse(config),
     }
   })
 
   router.post('/api/settings/config', async (ctx) => {
     const body = ctx.request.body as Partial<AppConfig>
+    const nodeConfig = normalizeOcrNodeConfig({
+      mode: body.ocrNodeMode,
+      customPath: body.ocrNodePath,
+    })
     const config = await saveAppConfig({
       modelRoot: typeof body.modelRoot === 'string' ? body.modelRoot.trim() : '',
-      variant: isOcrModelVariant(body.variant) ? body.variant : 'server',
+      variant: normalizeOcrModelVariant(body.variant),
       financeCheckRowConcurrency: normalizeFinanceCheckRowConcurrency(body.financeCheckRowConcurrency),
+      ocrNodeMode: nodeConfig.mode,
+      ocrNodePath: nodeConfig.customPath,
     })
     ctx.body = {
       code: 0,
-      data: {
-        ...config,
-        configDir: CONFIG_DIR,
-        configPath: CONFIG_PATH,
-      },
+      data: appConfigResponse(config),
     }
   })
 
@@ -536,15 +582,18 @@ function createHttpServer() {
     }
     if (!isOcrModelVariant(variant)) {
       ctx.status = 400
-      ctx.body = { code: -1, message: '模型类型无效，请选择 server、v6_small 或 v6_medium' }
+      ctx.body = { code: -1, message: '模型类型无效，请选择 v5_server、v6_small 或 v6_medium' }
       return
     }
+    await readAppliedAppConfig()
     setDefaultOcrRuntime({ modelRoot, variant })
     ctx.body = {
       code: 0,
       data: await createFinanceCheckTask({
         fileName: upload.file.fileName,
         content: upload.file.content,
+        modelRoot,
+        modelVariant: variant,
         rowConcurrency,
       }),
     }
@@ -656,10 +705,11 @@ async function createWindow() {
   }
 
   const { width, height } = screen.getPrimaryDisplay().workAreaSize
+  const publicDir = process.env.VITE_PUBLIC ?? RENDERER_DIST
 
   win = new BrowserWindow({
     title: '财务助手',
-    icon: path.join(process.env.VITE_PUBLIC, 'favicon.ico'),
+    icon: path.join(publicDir, 'favicon.ico'),
     width,
     height,
     backgroundColor: '#ffffff',

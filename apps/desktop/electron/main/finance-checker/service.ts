@@ -5,7 +5,8 @@ import { homedir } from 'node:os'
 import { shell } from 'electron'
 import { nanoid } from 'nanoid'
 import type { Context } from 'koa'
-import { recognizeImageFromPath } from '../ocr/service'
+import type { OcrModelVariant } from '../ocr/config'
+import { recognizeImageFromPath, setDefaultOcrRuntime } from '../ocr/service'
 import { FINANCE_CHECK_ROW_CONCURRENCY, FINANCE_CHECK_TOLERANCE } from './constants'
 import { auditOutputFilename, writeAuditWorkbook } from './excel-writer'
 import {
@@ -51,6 +52,7 @@ export type FinanceCheckTask = {
   sourcePath: string
   resultFileName: string | null
   sheetName: string | null
+  modelVariant: OcrModelVariant | null
   tolerance: number
   rowConcurrency: number
   summary: FinanceCheckSummary | null
@@ -67,6 +69,7 @@ export type FinanceCheckTask = {
 
 type StoredTask = FinanceCheckTask & {
   sourcePath: string
+  modelRoot?: string | null
   resultPath: string | null
   cancelledRequested?: boolean
 }
@@ -94,6 +97,7 @@ function publicTask(task: StoredTask): FinanceCheckTask {
     sourcePath: task.sourcePath,
     resultFileName: task.resultFileName,
     sheetName: task.sheetName,
+    modelVariant: task.modelVariant ?? null,
     tolerance: task.tolerance,
     rowConcurrency: task.rowConcurrency ?? FINANCE_CHECK_ROW_CONCURRENCY,
     summary: task.summary,
@@ -209,7 +213,10 @@ function upsertItem(items: FinanceCheckTaskItem[], item: FinanceCheckTaskItem): 
 
 async function runTask(task: StoredTask): Promise<void> {
   const started = Date.now()
-  console.log(`[finance-check] 任务开始: taskId=${task.id}, file=${task.sourcePath}, concurrency=${task.rowConcurrency ?? FINANCE_CHECK_ROW_CONCURRENCY}`)
+  if (task.modelRoot && task.modelVariant) {
+    setDefaultOcrRuntime({ modelRoot: task.modelRoot, variant: task.modelVariant })
+  }
+  console.log(`[finance-check] 任务开始: taskId=${task.id}, file=${task.sourcePath}, model=${task.modelVariant ?? '-'}, concurrency=${task.rowConcurrency ?? FINANCE_CHECK_ROW_CONCURRENCY}`)
   await updateTask(task.id, (current) => {
     current.taskStatus = 'running'
     current.startedAt = nowIso()
@@ -314,6 +321,8 @@ async function processQueue(): Promise<void> {
 export async function createFinanceCheckTask(payload: {
   fileName: string
   content: Buffer
+  modelRoot: string
+  modelVariant: OcrModelVariant
   rowConcurrency: number
 }): Promise<{ taskId: string; taskStatus: FinanceCheckTaskStatus }> {
   await ensureStore()
@@ -335,6 +344,8 @@ export async function createFinanceCheckTask(payload: {
     resultPath: null,
     sourcePath,
     sheetName: null,
+    modelRoot: payload.modelRoot,
+    modelVariant: payload.modelVariant,
     tolerance: FINANCE_CHECK_TOLERANCE,
     rowConcurrency: payload.rowConcurrency,
     summary: null,

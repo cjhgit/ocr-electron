@@ -1,6 +1,7 @@
 const OCR_API_BASE = 'http://localhost:38765'
 
-export type OcrModelVariant = 'server' | 'v6_small' | 'v6_medium'
+export type OcrModelVariant = 'v5_server' | 'v6_small' | 'v6_medium'
+export type OcrNodeMode = 'auto' | 'custom'
 
 export type OcrRecognizeRequest = {
   modelRoot: string
@@ -37,6 +38,15 @@ export type AppConfig = {
   modelRoot: string
   variant: OcrModelVariant
   financeCheckRowConcurrency: number
+  ocrNodeMode: OcrNodeMode
+  ocrNodePath: string
+  ocrNodeInfo: {
+    mode: OcrNodeMode
+    customPath: string
+    resolvedPath: string
+    usingElectronAsNode: boolean
+    source: 'custom' | 'env' | 'nvm' | 'path' | 'shell' | 'electron'
+  }
   configDir: string
   configPath: string
 }
@@ -149,6 +159,8 @@ export async function saveAppConfig(payload: {
   modelRoot: string
   variant: OcrModelVariant
   financeCheckRowConcurrency: number
+  ocrNodeMode: OcrNodeMode
+  ocrNodePath: string
 }): Promise<AppConfig> {
   const response = await fetch(`${OCR_API_BASE}/api/settings/config`, {
     method: 'POST',

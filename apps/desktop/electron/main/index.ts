@@ -35,8 +35,11 @@ import {
   sendFinanceCheckImage,
   type FinanceCheckTaskStatus,
 } from './finance-checker/service'
+import { initErrorLogging } from './logger'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+initErrorLogging('main')
 
 process.env.APP_ROOT = path.join(__dirname, '../..')
 
@@ -101,14 +104,6 @@ if (!app.requestSingleInstanceLock()) {
   app.quit()
   process.exit(0)
 }
-
-process.on('uncaughtException', (error) => {
-  console.error('[main] uncaught exception:', error)
-})
-
-process.on('unhandledRejection', (reason) => {
-  console.error('[main] unhandled rejection:', reason)
-})
 
 let win: BrowserWindow | null = null
 

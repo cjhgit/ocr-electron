@@ -4,6 +4,9 @@ import {
   type OcrRecognizeOptions,
   type OcrRuntimeOptions,
 } from './engine'
+import { initErrorLogging } from '../logger'
+
+initErrorLogging('ocr-worker')
 
 type OcrWorkerRequest =
   | {
@@ -42,14 +45,6 @@ async function handleRequest(message: OcrWorkerRequest): Promise<void> {
     })
   }
 }
-
-process.on('uncaughtException', (error) => {
-  console.error('[ocr] uncaught exception:', error)
-})
-
-process.on('unhandledRejection', (reason) => {
-  console.error('[ocr] unhandled rejection:', reason)
-})
 
 let queue = Promise.resolve()
 

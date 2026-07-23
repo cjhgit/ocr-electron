@@ -1012,12 +1012,12 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead>行号</TableHead>
                 <TableHead>核销券码</TableHead>
                 <TableHead>推单实付金额</TableHead>
                 <TableHead>实付券码</TableHead>
                 <TableHead>商家实收</TableHead>
                 <TableHead>商家实收图</TableHead>
-                <TableHead>行号</TableHead>
                 <TableHead>城市</TableHead>
                 <TableHead>商户</TableHead>
                 <TableHead>结果</TableHead>
@@ -1032,6 +1032,7 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
                 const merchantImageUrl = detailImageUrl(taskId, item.merchantCheckDetails)
                 return (
                   <TableRow key={item.id}>
+                    <TableCell>{item.rowNumber}</TableCell>
                     <TableCell>{item.couponCode ?? '-'}</TableCell>
                     <TableCell>{item.expectedPaidAmount ?? '-'}</TableCell>
                     <TableCell>
@@ -1049,7 +1050,6 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
                         onOpen={setImageTarget}
                       />
                     </TableCell>
-                    <TableCell>{item.rowNumber}</TableCell>
                     <TableCell>{item.city ?? '-'}</TableCell>
                     <TableCell className="max-w-45 truncate" title={item.merchantName ?? undefined}>{item.merchantName ?? '-'}</TableCell>
                     <TableCell><StatusBadge status={item.overallStatus} /></TableCell>
@@ -1082,6 +1082,8 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
         slides={imageTarget ? [{ src: imageTarget.url }] : []}
         plugins={[Zoom]}
         carousel={{ finite: true }}
+        controller={{ closeOnBackdropClick: true }}
+        styles={{ root: { '--yarl__color_backdrop': 'rgba(0, 0, 0, 0.45)' } }}
         zoom={{ maxZoomPixelRatio: 6, scrollToZoom: true }}
       />
     </div>

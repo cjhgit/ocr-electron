@@ -1,6 +1,6 @@
 const OCR_API_BASE = 'http://localhost:38765'
 
-export type OcrModelVariant = 'v5_server' | 'v6_small' | 'v6_medium'
+export type OcrModelVariant = 'v5_server' | 'v6_tiny' | 'v6_small' | 'v6_medium'
 export type OcrNodeMode = 'auto' | 'custom'
 
 export type OcrRecognizeRequest = {

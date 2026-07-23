@@ -94,6 +94,7 @@ const ITEM_STATUS_OPTIONS: Array<{ value: FinanceCheckResultStatus | 'all'; labe
 
 const OCR_MODEL_LABEL: Record<OcrModelVariant, string> = {
   v5_server: 'v5_server',
+  v6_tiny: 'v6_tiny',
   v6_small: 'v6_small',
   v6_medium: 'v6_medium',
 }
@@ -116,6 +117,12 @@ const OCR_MODEL_OPTIONS: Array<{ value: OcrModelVariant; label: string; badge?: 
     label: 'v6_medium',
     badge: '均衡',
     description: '准确率较高，但比较耗资源',
+  },
+  {
+    value: 'v6_tiny',
+    label: 'v6_tiny',
+    badge: '极轻量',
+    description: '体积最小、速度最快，占用资源最少',
   },
 ]
 

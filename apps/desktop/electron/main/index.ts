@@ -455,7 +455,7 @@ function createHttpServer() {
 
     if (!isOcrModelVariant(variant)) {
       ctx.status = 400
-      ctx.body = { code: -1, message: '模型类型无效，请选择 v5_server、v6_small 或 v6_medium' }
+      ctx.body = { code: -1, message: '模型类型无效，请选择 v5_server、v6_tiny、v6_small 或 v6_medium' }
       return
     }
 
@@ -582,7 +582,7 @@ function createHttpServer() {
     }
     if (!isOcrModelVariant(variant)) {
       ctx.status = 400
-      ctx.body = { code: -1, message: '模型类型无效，请选择 v5_server、v6_small 或 v6_medium' }
+      ctx.body = { code: -1, message: '模型类型无效，请选择 v5_server、v6_tiny、v6_small 或 v6_medium' }
       return
     }
     await readAppliedAppConfig()

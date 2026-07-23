@@ -27,6 +27,7 @@ import { Input } from './components/ui/input'
 import { NativeSelect, NativeSelectOption } from './components/ui/native-select'
 import { Progress } from './components/ui/progress'
 import { RadioGroup, RadioGroupItem } from './components/ui/radio-group'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs'
 import { Textarea } from './components/ui/textarea'
@@ -96,6 +97,27 @@ const OCR_MODEL_LABEL: Record<OcrModelVariant, string> = {
   v6_small: 'v6_small',
   v6_medium: 'v6_medium',
 }
+
+const OCR_MODEL_OPTIONS: Array<{ value: OcrModelVariant; label: string; badge?: string; description: string }> = [
+  {
+    value: 'v5_server',
+    label: 'v5_server',
+    badge: '高精度',
+    description: '旧版高精度模型，准确率较高，但占用资源较多',
+  },
+  {
+    value: 'v6_small',
+    label: 'v6_small',
+    badge: '轻量',
+    description: '轻量、速度快，占用资源少',
+  },
+  {
+    value: 'v6_medium',
+    label: 'v6_medium',
+    badge: '均衡',
+    description: '准确率较高，但比较耗资源',
+  },
+]
 
 type SettingsTab = 'model' | 'debug' | 'about'
 
@@ -302,6 +324,7 @@ function OcrSettings({
   const [modelDownloading, setModelDownloading] = useState(false)
   const [openingConfigFolder, setOpeningConfigFolder] = useState(false)
   const [error, setError] = useState('')
+  const selectedModelOption = OCR_MODEL_OPTIONS.find((option) => option.value === variant) ?? OCR_MODEL_OPTIONS[0]
   const settingsTabs = useMemo(
     () => [
       { key: 'model' as const, label: '模型', icon: Cpu },
@@ -424,14 +447,38 @@ function OcrSettings({
               <span>paddleocr-js-onnx 路径</span>
               <Input value={modelRoot} onChange={(event) => onModelRootChange(event.target.value)} placeholder="/path/to/paddleocr-js-onnx" />
             </label>
-            <label className={fieldClass}>
+            <div className={fieldClass}>
               <span>模型类型</span>
-              <NativeSelect value={variant} onChange={(event) => onVariantChange(event.target.value as OcrModelVariant)} className="w-full">
-                <NativeSelectOption value="v5_server">v5_server（高精度）</NativeSelectOption>
-                <NativeSelectOption value="v6_small">v6_small</NativeSelectOption>
-                <NativeSelectOption value="v6_medium">v6_medium</NativeSelectOption>
-              </NativeSelect>
-            </label>
+              <Select value={variant} onValueChange={(value) => onVariantChange(value as OcrModelVariant)}>
+                <SelectTrigger className="h-auto min-h-10 w-full">
+                  <SelectValue>
+                    {(value: OcrModelVariant | null) => {
+                      const option = OCR_MODEL_OPTIONS.find((item) => item.value === value) ?? selectedModelOption
+                      return (
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span className="truncate font-medium text-foreground">{option.label}</span>
+                          {option.badge && <Badge variant="secondary" className="shrink-0">{option.badge}</Badge>}
+                        </span>
+                      )
+                    }}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="start" className="min-w-80">
+                  {OCR_MODEL_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value} label={`${option.label} ${option.badge ?? ''}`} className="items-start py-2">
+                      <span className="grid min-w-0 gap-1 whitespace-normal">
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span className="font-medium text-foreground">{option.label}</span>
+                          {option.badge && <Badge variant="secondary" className="shrink-0">{option.badge}</Badge>}
+                        </span>
+                        <span className="text-xs leading-snug text-muted-foreground">{option.description}</span>
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="text-xs leading-relaxed text-muted-foreground">{selectedModelOption.description}</span>
+            </div>
             <label className={fieldClass}>
               <span>对账行并发数</span>
               <Input

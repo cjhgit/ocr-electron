@@ -136,6 +136,7 @@ const OCR_MODEL_OPTIONS: Array<{ value: OcrModelVariant; label: string; badge?: 
 type SettingsTab = 'model' | 'debug' | 'about'
 
 const pageShellClass = 'mx-auto flex min-h-screen w-full max-w-[1600px] flex-col gap-5 p-6 max-sm:p-4'
+const versionBadgeClass = 'pointer-events-none fixed right-4 bottom-4 text-xs text-muted-foreground select-none'
 const pageStackClass = 'flex flex-col gap-4'
 const cardStackClass = 'flex flex-col gap-4'
 const actionsClass = 'flex flex-wrap items-center justify-end gap-2 max-lg:justify-start'
@@ -151,6 +152,10 @@ const detailValueClass = 'text-sm font-medium text-foreground'
 function formatTime(iso: string | null): string {
   if (!iso) return '-'
   return new Date(iso).toLocaleString()
+}
+
+function formatAppVersion(version: string | undefined): string {
+  return version ? `v${version}` : '-'
 }
 
 function formatDuration(ms: number | null | undefined): string {
@@ -641,7 +646,7 @@ function OcrSettings({
             <CardContent>
             <div className="grid max-w-md grid-cols-[120px_minmax(0,1fr)] items-center gap-3 py-3">
               <span className="text-xs text-muted-foreground">版本号</span>
-              <strong className="text-sm font-semibold text-foreground">{appPackage.version || '-'}</strong>
+              <strong className="text-sm font-semibold text-foreground">{formatAppVersion(appPackage.version)}</strong>
             </div>
             </CardContent>
           </Card>
@@ -1294,6 +1299,7 @@ function App() {
       {activeTab === 'finance'
         ? <FinanceCheckPage modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} modelInfo={modelInfo} onOpenSettings={() => setActiveTab('settings')} />
         : <OcrSettings modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} ocrNodeMode={ocrNodeMode} ocrNodePath={ocrNodePath} ocrNodeInfo={ocrNodeInfo} configPath={configPath} onModelRootChange={handleModelRootChange} onVariantChange={handleVariantChange} onFinanceCheckRowConcurrencyChange={handleFinanceCheckRowConcurrencyChange} onOcrNodeModeChange={handleOcrNodeModeChange} onOcrNodePathChange={handleOcrNodePathChange} onConfigChange={handleConfigChange} onModelInfoChange={setModelInfo} />}
+      <span className={versionBadgeClass}>{formatAppVersion(appPackage.version)}</span>
     </div>
   )
 }

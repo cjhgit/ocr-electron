@@ -249,8 +249,11 @@ function isPackagedApp(): boolean {
   return __dirname.includes('app.asar')
 }
 
-function resolveWorkerScriptPath(): string {
-  const scriptPath = resolveAsarUnpackedPath(join(__dirname, 'ocr-worker.js'))
+function resolveWorkerScriptPath(nodeInfo: OcrNodeRuntimeInfo): string {
+  const scriptInAsar = join(__dirname, 'ocr-worker.js')
+  const scriptPath = nodeInfo.usingElectronAsNode
+    ? scriptInAsar
+    : resolveAsarUnpackedPath(scriptInAsar)
   if (!existsSync(scriptPath)) {
     throw new Error(`OCR worker 脚本不存在: ${scriptPath}`)
   }
@@ -260,9 +263,6 @@ function resolveWorkerScriptPath(): string {
 const OCR_WORKER_MODULE_NAMES = [
   'onnxruntime-node',
   'onnxruntime-common',
-  'paddleocr',
-  'jpeg-js',
-  'fast-png',
 ] as const
 
 function resolvePackagedNodeModuleSearchPaths(): string[] {
@@ -337,7 +337,7 @@ function getWorker(): ChildProcess {
     }
     validateCustomNodePath(nodeInfo.resolvedPath)
   }
-  const workerScriptPath = resolveWorkerScriptPath()
+  const workerScriptPath = resolveWorkerScriptPath(nodeInfo)
   console.log('[ocr] starting worker process:', { ...nodeInfo, workerScriptPath })
   const workerOutput = { stdout: '', stderr: '' }
   worker = fork(workerScriptPath, [], {

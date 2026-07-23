@@ -72,7 +72,7 @@ const RESULT_STATUS_LABEL: Record<FinanceCheckResultStatus, string> = {
   pass: '通过',
   fail: '不通过',
   skip: '跳过',
-  error: '异常',
+  error: '不通过',
 }
 
 const STATUS_OPTIONS: Array<{ value: FinanceCheckTaskStatus | 'all'; label: string }> = [
@@ -92,7 +92,6 @@ const ITEM_STATUS_OPTIONS: Array<{ value: FinanceCheckResultStatus | 'all'; labe
   { value: 'pass', label: '通过' },
   { value: 'fail', label: '不通过' },
   { value: 'skip', label: '跳过' },
-  { value: 'error', label: '异常' },
 ]
 
 const OCR_MODEL_LABEL: Record<OcrModelVariant, string> = {
@@ -195,6 +194,14 @@ function StatusBadge({ status }: { status: FinanceCheckTaskStatus | FinanceCheck
   )
 }
 
+function failSummaryCount(summary: NonNullable<FinanceCheckTask['summary']>): number {
+  return summary.fail + summary.error
+}
+
+function formatCheckSummary(summary: NonNullable<FinanceCheckTask['summary']>): string {
+  return `通过 ${summary.pass} / 不通过 ${failSummaryCount(summary)} / 跳过 ${summary.skip}`
+}
+
 function SummaryCount({ value, tone }: { value: number; tone: 'pass' | 'fail' }) {
   if (value <= 0) return <>{value}</>
   return <span className={cn('font-semibold', tone === 'pass' ? 'text-emerald-700 dark:text-emerald-300' : 'text-destructive')}>{value}</span>
@@ -206,11 +213,9 @@ function SummaryText({ task }: { task: FinanceCheckTask }) {
     <span className="text-xs text-muted-foreground">
       通过 <SummaryCount value={task.summary.pass} tone="pass" />
       {' / '}
-      不通过 <SummaryCount value={task.summary.fail} tone="fail" />
+      不通过 <SummaryCount value={failSummaryCount(task.summary)} tone="fail" />
       {' / '}
       跳过 <SummaryCount value={task.summary.skip} tone="fail" />
-      {' / '}
-      异常 <SummaryCount value={task.summary.error} tone="fail" />
     </span>
   )
 }
@@ -981,7 +986,7 @@ function FinanceCheckDetail({ taskId, onBack }: { taskId: string; onBack: () => 
             <Info label="完成时间" value={formatTime(task.finishedAt)} />
             <Info label="耗时" value={formatTaskDuration(task, nowMs)} />
             <Info label="行并发数" value={String(task.rowConcurrency)} />
-            <Info label="对账汇总" value={task.summary ? `通过 ${task.summary.pass} / 不通过 ${task.summary.fail} / 跳过 ${task.summary.skip} / 异常 ${task.summary.error}` : '-'} />
+            <Info label="对账汇总" value={task.summary ? formatCheckSummary(task.summary) : '-'} />
           </div>
         )}
         {task && <TaskProgress task={task} />}

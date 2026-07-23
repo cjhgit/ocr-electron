@@ -15,7 +15,7 @@ import {
   renderJsonReport,
   type FinanceCheckJsonReport,
 } from './validator'
-import { overallStatus, type CheckStatus, type RowCheckResult } from './types'
+import { CheckStatusKey, overallStatus, type CheckStatus, type RowCheckResult } from './types'
 
 export type FinanceCheckTaskStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled'
 
@@ -400,7 +400,11 @@ export async function listFinanceCheckItems(params: {
 }): Promise<{ items: FinanceCheckTaskItem[]; total: number }> {
   const items = await readItems(params.taskId)
   const filtered = params.overallStatus
-    ? items.filter((item) => item.overallStatus === params.overallStatus)
+    ? items.filter((item) =>
+        params.overallStatus === CheckStatusKey.FAIL
+          ? item.overallStatus === CheckStatusKey.FAIL || item.overallStatus === CheckStatusKey.ERROR
+          : item.overallStatus === params.overallStatus,
+      )
     : items
   const page = Math.max(1, params.page ?? 1)
   const pageSize = Math.max(1, params.pageSize ?? 50)

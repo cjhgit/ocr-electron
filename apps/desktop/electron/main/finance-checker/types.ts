@@ -49,7 +49,7 @@ export function overallStatus(result: RowCheckResult): CheckStatus {
   ) as FieldCheck[]
   if (checks.length === 0) return CheckStatusKey.SKIP
   if (checks.some((check) => check.status === CheckStatusKey.ERROR)) {
-    return CheckStatusKey.ERROR
+    return CheckStatusKey.FAIL
   }
   if (checks.some((check) => check.status === CheckStatusKey.FAIL)) {
     return CheckStatusKey.FAIL

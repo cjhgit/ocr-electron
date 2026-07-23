@@ -25,7 +25,7 @@ const REF_RE = /^([A-Z]+)(\d+)$/
 
 const STATUS_LABELS: Record<string, string> = {
   [CheckStatusKey.FAIL]: '不通过',
-  [CheckStatusKey.ERROR]: '异常',
+  [CheckStatusKey.ERROR]: '不通过',
   [CheckStatusKey.SKIP]: '跳过',
 }
 

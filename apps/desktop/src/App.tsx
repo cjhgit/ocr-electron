@@ -1300,6 +1300,12 @@ function App() {
         ? <FinanceCheckPage modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} modelInfo={modelInfo} onOpenSettings={() => setActiveTab('settings')} />
         : <OcrSettings modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} ocrNodeMode={ocrNodeMode} ocrNodePath={ocrNodePath} ocrNodeInfo={ocrNodeInfo} configPath={configPath} onModelRootChange={handleModelRootChange} onVariantChange={handleVariantChange} onFinanceCheckRowConcurrencyChange={handleFinanceCheckRowConcurrencyChange} onOcrNodeModeChange={handleOcrNodeModeChange} onOcrNodePathChange={handleOcrNodePathChange} onConfigChange={handleConfigChange} onModelInfoChange={setModelInfo} />}
       <div className={bottomRightInfoClass}>
+        {ocrNodeInfo?.usingElectronAsNode && (
+          <>
+            <span>使用内置 Node.js</span>
+            <span aria-hidden="true">·</span>
+          </>
+        )}
         <span>{formatOcrModelVariant(variant)}</span>
         <span aria-hidden="true">·</span>
         <span>{formatAppVersion(appPackage.version)}</span>

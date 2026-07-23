@@ -84,6 +84,9 @@ const STATUS_OPTIONS: Array<{ value: FinanceCheckTaskStatus | 'all'; label: stri
   { value: 'cancelled', label: '已取消' },
 ]
 
+const FINANCE_CHECK_EXAMPLE_XLSX_URL =
+  'https://ai-html.obs.cn-south-1.myhuaweicloud.com:443/finance-checker/example.xlsx'
+
 const ITEM_STATUS_OPTIONS: Array<{ value: FinanceCheckResultStatus | 'all'; label: string }> = [
   { value: 'all', label: '全部结果' },
   { value: 'pass', label: '通过' },
@@ -789,6 +792,7 @@ function FinanceCheckPage({
               {STATUS_OPTIONS.map((option) => <NativeSelectOption key={option.value} value={option.value}>{option.label}</NativeSelectOption>)}
             </NativeSelect>
             <Button type="button" variant="outline" onClick={() => void refresh()}><RefreshCw size={16} />刷新</Button>
+            <a className={buttonVariants({ variant: 'outline' })} href={FINANCE_CHECK_EXAMPLE_XLSX_URL} download="example.xlsx"><Download size={16} />下载示例表格</a>
           </div>
           </CardAction>
         </CardHeader>

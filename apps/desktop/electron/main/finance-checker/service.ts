@@ -74,6 +74,7 @@ export type FinanceCheckTask = {
   progressPercent: number | null
   errorMessage: string | null
   resultDownloadUrl: string | null
+  archived: boolean
   createdAt: string
   startedAt: string | null
   finishedAt: string | null
@@ -119,6 +120,7 @@ function publicTask(task: StoredTask): FinanceCheckTask {
     progressPercent: task.progressPercent,
     errorMessage: task.errorMessage,
     resultDownloadUrl: task.resultDownloadUrl,
+    archived: Boolean(task.archived),
     createdAt: task.createdAt,
     startedAt: task.startedAt,
     finishedAt: task.finishedAt,
@@ -372,6 +374,7 @@ export async function createFinanceCheckTask(payload: {
     progressPercent: 0,
     errorMessage: null,
     resultDownloadUrl: null,
+    archived: false,
     createdAt: nowIso(),
     startedAt: null,
     finishedAt: null,
@@ -391,11 +394,16 @@ export async function listFinanceCheckTasks(params: {
   page?: number
   pageSize?: number
   taskStatus?: FinanceCheckTaskStatus
+  includeArchived?: boolean
 }): Promise<{ items: FinanceCheckTask[]; total: number }> {
   const store = await readStore()
-  const filtered = params.taskStatus
-    ? store.tasks.filter((task) => task.taskStatus === params.taskStatus)
-    : store.tasks
+  let filtered = store.tasks
+  if (!params.includeArchived) {
+    filtered = filtered.filter((task) => !task.archived)
+  }
+  if (params.taskStatus) {
+    filtered = filtered.filter((task) => task.taskStatus === params.taskStatus)
+  }
   const page = Math.max(1, params.page ?? 1)
   const pageSize = Math.max(1, params.pageSize ?? 10)
   return {
@@ -461,6 +469,16 @@ export async function cancelFinanceCheckTask(taskId: string): Promise<boolean> {
     }
   })
   return Boolean(task)
+}
+
+export async function setFinanceCheckTaskArchived(taskId: string, archived: boolean): Promise<boolean> {
+  const store = await readStore()
+  const task = store.tasks.find((item) => item.id === taskId)
+  if (!task) return false
+  if (task.taskStatus === 'pending' || task.taskStatus === 'running') return false
+  task.archived = archived
+  await writeStore(store)
+  return true
 }
 
 export async function deleteFinanceCheckTask(taskId: string): Promise<boolean> {

@@ -34,6 +34,7 @@ import {
   openFinanceCheckSourceFile,
   sendFinanceCheckDownload,
   sendFinanceCheckImage,
+  setFinanceCheckTaskArchived,
   updateFinanceCheckItem,
   type FinanceCheckTaskStatus,
 } from './finance-checker/service'
@@ -586,12 +587,14 @@ function createHttpServer() {
   router.get('/api/finance-check/tasks', async (ctx) => {
     const query = ctx.query as Record<string, string | undefined>
     const taskStatus = query.taskStatus as FinanceCheckTaskStatus | undefined
+    const includeArchived = query.includeArchived === '1' || query.includeArchived === 'true'
     ctx.body = {
       code: 0,
       data: await listFinanceCheckTasks({
         page: Number(query.page ?? 1),
         pageSize: Number(query.pageSize ?? 10),
         taskStatus,
+        includeArchived,
       }),
     }
   })
@@ -685,6 +688,26 @@ function createHttpServer() {
     if (!ok) {
       ctx.status = 404
       ctx.body = { code: -1, message: '原始文件不存在' }
+      return
+    }
+    ctx.body = { code: 0, data: { ok: true } }
+  })
+
+  router.post('/api/finance-check/tasks/:taskId/archive', async (ctx) => {
+    const ok = await setFinanceCheckTaskArchived(ctx.params.taskId, true)
+    if (!ok) {
+      ctx.status = 400
+      ctx.body = { code: -1, message: '任务不存在或正在执行中，无法归档' }
+      return
+    }
+    ctx.body = { code: 0, data: { ok: true } }
+  })
+
+  router.post('/api/finance-check/tasks/:taskId/unarchive', async (ctx) => {
+    const ok = await setFinanceCheckTaskArchived(ctx.params.taskId, false)
+    if (!ok) {
+      ctx.status = 400
+      ctx.body = { code: -1, message: '任务不存在或正在执行中，无法取消归档' }
       return
     }
     ctx.body = { code: 0, data: { ok: true } }

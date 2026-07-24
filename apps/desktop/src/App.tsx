@@ -1,6 +1,8 @@
 import { type DragEvent, useEffect, useMemo, useRef, useState } from 'react'
 import appPackage from '../package.json'
 import {
+  Archive,
+  ArchiveRestore,
   ArrowLeft,
   Bug,
   Check,
@@ -36,10 +38,12 @@ import {
   DropdownMenuTrigger,
 } from './components/ui/dropdown-menu'
 import { Input } from './components/ui/input'
+import { Label } from './components/ui/label'
 import { NativeSelect, NativeSelectOption } from './components/ui/native-select'
 import { Progress } from './components/ui/progress'
 import { RadioGroup, RadioGroupItem } from './components/ui/radio-group'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select'
+import { Switch } from './components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs'
 import { Textarea } from './components/ui/textarea'
@@ -61,6 +65,7 @@ import {
   type OcrServerModelInfo,
 } from './lib/ocr-api'
 import {
+  archiveFinanceCheckTask,
   cancelFinanceCheckTask,
   deleteFinanceCheckTask,
   fetchFinanceCheckTask,
@@ -68,6 +73,7 @@ import {
   fetchFinanceCheckTasks,
   financeCheckImageUrl,
   openFinanceCheckSourceFile,
+  unarchiveFinanceCheckTask,
   updateFinanceCheckTaskItem,
   uploadFinanceCheckTask,
   type FinanceCheckItemReviewUpdate,
@@ -1129,6 +1135,7 @@ function FinanceCheckPage({
   const [tasks, setTasks] = useState<FinanceCheckTask[]>([])
   const [total, setTotal] = useState(0)
   const [statusFilter, setStatusFilter] = useState<FinanceCheckTaskStatus | 'all'>('all')
+  const [showArchived, setShowArchived] = useState(false)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -1150,6 +1157,7 @@ function FinanceCheckPage({
         page,
         pageSize,
         taskStatus: statusFilter === 'all' ? undefined : statusFilter,
+        includeArchived: showArchived,
       })
       setTasks(data.items)
       setTotal(data.total)
@@ -1172,7 +1180,7 @@ function FinanceCheckPage({
 
   useEffect(() => {
     void refresh()
-  }, [page, statusFilter])
+  }, [page, statusFilter, showArchived])
 
   useEffect(() => {
     const hasActive = tasks.some((task) => task.taskStatus === 'pending' || task.taskStatus === 'running')
@@ -1180,7 +1188,7 @@ function FinanceCheckPage({
     if (!hasActive) return
     const timer = window.setInterval(() => void refresh(), 3000)
     return () => window.clearInterval(timer)
-  }, [tasks, page, statusFilter, cancellingTaskIds])
+  }, [tasks, page, statusFilter, showArchived, cancellingTaskIds])
 
   useEffect(() => {
     const hasActive = tasks.some((task) => task.taskStatus === 'pending' || task.taskStatus === 'running')
@@ -1240,6 +1248,20 @@ function FinanceCheckPage({
         next.delete(taskId)
         return next
       })
+    }
+  }
+
+  async function handleToggleArchive(task: FinanceCheckTask) {
+    setError('')
+    try {
+      if (task.archived) {
+        await unarchiveFinanceCheckTask(task.id)
+      } else {
+        await archiveFinanceCheckTask(task.id)
+      }
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : task.archived ? '取消归档失败' : '归档失败')
     }
   }
 
@@ -1310,6 +1332,16 @@ function FinanceCheckPage({
             }}>
               {STATUS_OPTIONS.map((option) => <NativeSelectOption key={option.value} value={option.value}>{option.label}</NativeSelectOption>)}
             </NativeSelect>
+            <Label className="flex items-center gap-2 font-normal text-muted-foreground">
+              <Switch
+                checked={showArchived}
+                onCheckedChange={(checked) => {
+                  setShowArchived(checked)
+                  setPage(1)
+                }}
+              />
+              显示归档
+            </Label>
             <Button type="button" variant="outline" onClick={() => void refresh()}><RefreshCw size={16} />刷新</Button>
             <a className={buttonVariants({ variant: 'outline' })} href={FINANCE_CHECK_EXAMPLE_XLSX_URL} download="example.xlsx"><Download size={16} />下载示例表格</a>
           </div>
@@ -1378,7 +1410,12 @@ function FinanceCheckPage({
                 const isCancelling = cancellingTaskIds.has(task.id)
                 return (
                 <TableRow key={task.id}>
-                  <TableCell><Button type="button" variant="link" className="h-auto min-h-0 max-w-80 justify-start truncate p-0" onClick={() => setSelectedTaskId(task.id)}>{task.sourceFileName}</Button></TableCell>
+                  <TableCell>
+                    <div className="flex max-w-80 items-center gap-2">
+                      <Button type="button" variant="link" className="h-auto min-h-0 flex-1 justify-start truncate p-0" onClick={() => setSelectedTaskId(task.id)}>{task.sourceFileName}</Button>
+                      {task.archived && <Badge variant="secondary">已归档</Badge>}
+                    </div>
+                  </TableCell>
                   <TableCell><StatusBadge status={isCancelling ? 'cancelling' : task.taskStatus} /></TableCell>
                   <TableCell className="w-55 max-w-55"><ErrorMessageCell message={task.errorMessage} /></TableCell>
                   <TableCell><TaskProgress task={task} cancelling={isCancelling} />{task.taskStatus === 'succeeded' && <SummaryText task={task} />}</TableCell>
@@ -1387,7 +1424,7 @@ function FinanceCheckPage({
                   <TableCell>{formatTime(task.createdAt)}</TableCell>
                   <TableCell>
                     <div className={rowActionsClass}>
-                      <Button type="button" variant="ghost" size="sm" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
+                      {/* <Button type="button" variant="ghost" size="sm" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button> */}
                       <Button type="button" variant="ghost" size="sm" onClick={() => void handleOpenSourceFile(task.id)}><FolderOpen size={14} />原文件</Button>
                       {task.taskStatus === 'succeeded' && task.resultDownloadUrl && <a className={buttonVariants({ variant: 'ghost', size: 'sm' })} href={task.resultDownloadUrl}><Download size={14} />下载</a>}
                       {(task.taskStatus === 'pending' || task.taskStatus === 'running') && !isCancelling
@@ -1397,7 +1434,14 @@ function FinanceCheckPage({
                             </Button>
                           )
                         : (task.taskStatus !== 'pending' && task.taskStatus !== 'running')
-                          ? <Button type="button" variant="ghost" size="sm" className={dangerClass} onClick={async () => { if (window.confirm(`确定删除「${task.sourceFileName}」吗？`)) { await deleteFinanceCheckTask(task.id); await refresh() } }}><Trash2 size={14} />删除</Button>
+                          ? (
+                              <>
+                                <Button type="button" variant="ghost" size="sm" onClick={() => void handleToggleArchive(task)}>
+                                  {task.archived ? <><ArchiveRestore size={14} />取消归档</> : <><Archive size={14} />归档</>}
+                                </Button>
+                                <Button type="button" variant="ghost" size="sm" className={dangerClass} onClick={async () => { if (window.confirm(`确定删除「${task.sourceFileName}」吗？`)) { await deleteFinanceCheckTask(task.id); await refresh() } }}><Trash2 size={14} />删除</Button>
+                              </>
+                            )
                           : null}
                     </div>
                   </TableCell>
@@ -1839,7 +1883,7 @@ function FinanceCheckDetail({ taskId, onBack, onCancel, onCancellingResolved, ca
             <Button type="button" variant="ghost" size="icon" onClick={onBack} aria-label="返回"><ArrowLeft size={18} /></Button>
             <div>
               <CardTitle>{task?.sourceFileName ?? '对账任务详情'}</CardTitle>
-              {task && <div className="mt-2 flex items-center gap-2"><StatusBadge status={cancelling ? 'cancelling' : task.taskStatus} /></div>}
+              {task && <div className="mt-2 flex items-center gap-2"><StatusBadge status={cancelling ? 'cancelling' : task.taskStatus} />{task.archived && <Badge variant="secondary">已归档</Badge>}</div>}
             </div>
           </div>
           <CardAction>
@@ -1854,6 +1898,27 @@ function FinanceCheckDetail({ taskId, onBack, onCancel, onCancellingResolved, ca
             {task && (task.taskStatus === 'pending' || task.taskStatus === 'running') && !cancelling && (
               <Button type="button" variant="outline" className={dangerClass} onClick={onCancel}>
                 <XCircle size={16} />取消任务
+              </Button>
+            )}
+            {task && task.taskStatus !== 'pending' && task.taskStatus !== 'running' && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={async () => {
+                  setError('')
+                  try {
+                    if (task.archived) {
+                      await unarchiveFinanceCheckTask(taskId)
+                    } else {
+                      await archiveFinanceCheckTask(taskId)
+                    }
+                    await refresh()
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : task.archived ? '取消归档失败' : '归档失败')
+                  }
+                }}
+              >
+                {task.archived ? <><ArchiveRestore size={16} />取消归档</> : <><Archive size={16} />归档</>}
               </Button>
             )}
             {task && task.taskStatus !== 'pending' && task.taskStatus !== 'running' && <Button type="button" variant="outline" className={dangerClass} onClick={async () => { if (window.confirm(`确定删除「${task.sourceFileName}」吗？`)) { await deleteFinanceCheckTask(taskId); onBack() } }}><Trash2 size={16} />删除任务</Button>}

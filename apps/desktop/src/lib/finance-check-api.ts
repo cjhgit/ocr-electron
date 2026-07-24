@@ -34,6 +34,7 @@ export type FinanceCheckTask = {
   progressPercent: number | null
   errorMessage: string | null
   resultDownloadUrl: string | null
+  archived: boolean
   createdAt: string
   startedAt: string | null
   finishedAt: string | null
@@ -117,12 +118,14 @@ export function fetchFinanceCheckTasks(params: {
   page: number
   pageSize: number
   taskStatus?: FinanceCheckTaskStatus
+  includeArchived?: boolean
 }) {
   const query = new URLSearchParams({
     page: String(params.page),
     pageSize: String(params.pageSize),
   })
   if (params.taskStatus) query.set('taskStatus', params.taskStatus)
+  if (params.includeArchived) query.set('includeArchived', '1')
   return request<{ items: FinanceCheckTask[]; total: number }>(
     `/api/finance-check/tasks?${query}`,
   )
@@ -167,6 +170,18 @@ export function cancelFinanceCheckTask(taskId: string) {
 export function deleteFinanceCheckTask(taskId: string) {
   return request<{ ok: boolean }>(`/api/finance-check/tasks/${taskId}`, {
     method: 'DELETE',
+  })
+}
+
+export function archiveFinanceCheckTask(taskId: string) {
+  return request<{ ok: boolean }>(`/api/finance-check/tasks/${taskId}/archive`, {
+    method: 'POST',
+  })
+}
+
+export function unarchiveFinanceCheckTask(taskId: string) {
+  return request<{ ok: boolean }>(`/api/finance-check/tasks/${taskId}/unarchive`, {
+    method: 'POST',
   })
 }
 

@@ -30,6 +30,7 @@ import { Alert, AlertAction, AlertDescription, AlertTitle } from './components/u
 import { Badge } from './components/ui/badge'
 import { Button, buttonVariants } from './components/ui/button'
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card'
+import { Checkbox } from './components/ui/checkbox'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './components/ui/dialog'
 import {
   DropdownMenu,
@@ -1142,12 +1143,22 @@ function FinanceCheckPage({
   const [isDragOver, setIsDragOver] = useState(false)
   const [error, setError] = useState('')
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
+  const [batchArchiving, setBatchArchiving] = useState(false)
   const [cancellingTaskIds, setCancellingTaskIds] = useState<Set<string>>(() => new Set())
   const [nowMs, setNowMs] = useState(() => Date.now())
   const dragCountRef = useRef(0)
   const pageSize = 10
   const shouldPromptForModel =
     !modelRoot.trim() || (variant === 'v5_server' && modelInfo?.modelRoot === modelRoot.trim() && !modelInfo.ready)
+
+  function canSelectTask(task: FinanceCheckTask) {
+    return task.taskStatus !== 'pending' && task.taskStatus !== 'running'
+  }
+
+  function canArchiveTask(task: FinanceCheckTask) {
+    return canSelectTask(task) && !task.archived
+  }
 
   async function refresh() {
     setLoading(true)
@@ -1161,6 +1172,11 @@ function FinanceCheckPage({
       })
       setTasks(data.items)
       setTotal(data.total)
+      setSelectedIds((prev) => {
+        if (prev.size === 0) return prev
+        const nextIds = new Set(data.items.filter((task) => prev.has(task.id) && canSelectTask(task)).map((task) => task.id))
+        return nextIds.size === prev.size && [...nextIds].every((id) => prev.has(id)) ? prev : nextIds
+      })
       setCancellingTaskIds((prev) => {
         if (prev.size === 0) return prev
         const next = new Set(prev)
@@ -1179,6 +1195,7 @@ function FinanceCheckPage({
   }
 
   useEffect(() => {
+    setSelectedIds(new Set())
     void refresh()
   }, [page, statusFilter, showArchived])
 
@@ -1265,6 +1282,47 @@ function FinanceCheckPage({
     }
   }
 
+  async function handleBatchArchive() {
+    const targets = tasks.filter((task) => selectedIds.has(task.id) && canArchiveTask(task))
+    if (targets.length === 0) return
+    setBatchArchiving(true)
+    setError('')
+    try {
+      const results = await Promise.allSettled(targets.map((task) => archiveFinanceCheckTask(task.id)))
+      const failed = results.filter((result) => result.status === 'rejected').length
+      setSelectedIds(new Set())
+      await refresh()
+      if (failed > 0) {
+        setError(`有 ${failed} 条任务归档失败`)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '批量归档失败')
+    } finally {
+      setBatchArchiving(false)
+    }
+  }
+
+  function toggleTaskSelected(taskId: string, checked: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (checked) next.add(taskId)
+      else next.delete(taskId)
+      return next
+    })
+  }
+
+  function toggleSelectAll(checked: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      for (const task of tasks) {
+        if (!canSelectTask(task)) continue
+        if (checked) next.add(task.id)
+        else next.delete(task.id)
+      }
+      return next
+    })
+  }
+
   function clearCancellingTask(taskId: string) {
     setCancellingTaskIds((prev) => {
       if (!prev.has(taskId)) return prev
@@ -1313,6 +1371,11 @@ function FinanceCheckPage({
   }
 
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
+  const selectableTasks = tasks.filter(canSelectTask)
+  const selectedCount = selectableTasks.filter((task) => selectedIds.has(task.id)).length
+  const allSelectableSelected = selectableTasks.length > 0 && selectedCount === selectableTasks.length
+  const someSelectableSelected = selectedCount > 0 && !allSelectableSelected
+  const batchArchiveTargets = tasks.filter((task) => selectedIds.has(task.id) && canArchiveTask(task))
 
   return (
     <div className={pageStackClass}>
@@ -1391,10 +1454,36 @@ function FinanceCheckPage({
           </div>
         </div>
         {error && <p className={errorTextClass}>{error}</p>}
+        {selectedCount > 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/50 px-3 py-2">
+            <span className={mutedClass}>已选 {selectedCount} 条</span>
+            <Button
+              type="button"
+              size="sm"
+              disabled={batchArchiving || batchArchiveTargets.length === 0}
+              onClick={() => void handleBatchArchive()}
+            >
+              <Archive size={14} />
+              {batchArchiving ? '归档中...' : `归档${batchArchiveTargets.length > 0 ? ` (${batchArchiveTargets.length})` : ''}`}
+            </Button>
+            <Button type="button" size="sm" variant="ghost" disabled={batchArchiving} onClick={() => setSelectedIds(new Set())}>
+              取消选择
+            </Button>
+          </div>
+        )}
         <div className={tableWrapClass}>
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10">
+                  <Checkbox
+                    checked={allSelectableSelected}
+                    indeterminate={someSelectableSelected}
+                    disabled={selectableTasks.length === 0}
+                    onCheckedChange={(checked) => toggleSelectAll(checked)}
+                    aria-label="全选当前页"
+                  />
+                </TableHead>
                 <TableHead>文件名</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>错误信息</TableHead>
@@ -1408,8 +1497,17 @@ function FinanceCheckPage({
             <TableBody>
               {tasks.map((task) => {
                 const isCancelling = cancellingTaskIds.has(task.id)
+                const selectable = canSelectTask(task)
                 return (
-                <TableRow key={task.id}>
+                <TableRow key={task.id} data-state={selectedIds.has(task.id) ? 'selected' : undefined}>
+                  <TableCell>
+                    <Checkbox
+                      checked={selectedIds.has(task.id)}
+                      disabled={!selectable}
+                      onCheckedChange={(checked) => toggleTaskSelected(task.id, checked)}
+                      aria-label={`选择 ${task.sourceFileName}`}
+                    />
+                  </TableCell>
                   <TableCell>
                     <div className="flex max-w-80 items-center gap-2">
                       <Button type="button" variant="link" className="h-auto min-h-0 flex-1 justify-start truncate p-0" onClick={() => setSelectedTaskId(task.id)}>{task.sourceFileName}</Button>
@@ -1448,7 +1546,7 @@ function FinanceCheckPage({
                 </TableRow>
                 )
               })}
-              {!loading && tasks.length === 0 && <TableRow><TableCell colSpan={8} className={emptyCellClass}>暂无对账任务，点击“上传表格”开始</TableCell></TableRow>}
+              {!loading && tasks.length === 0 && <TableRow><TableCell colSpan={9} className={emptyCellClass}>暂无对账任务，点击“上传表格”开始</TableCell></TableRow>}
             </TableBody>
           </Table>
         </div>

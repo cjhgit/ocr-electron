@@ -1,5 +1,5 @@
 import { fork, spawnSync, type ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { basename, delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -209,6 +209,15 @@ function trimWorkerOutput(text: string): string {
   return `...(truncated)\n${normalized.slice(-WORKER_OUTPUT_MAX_CHARS)}`
 }
 
+function isOnnxDlopenFailure(output: string | undefined): boolean {
+  if (!output) return false
+  return (
+    /ERR_DLOPEN_FAILED/i.test(output)
+    || /onnxruntime_binding\.node/i.test(output)
+    || /The specified module could not be found/i.test(output)
+  )
+}
+
 function formatWorkerFailure(
   prefix: string,
   code: number | null,
@@ -217,6 +226,16 @@ function formatWorkerFailure(
 ): Error {
   const reason = signal ? `signal=${signal}` : `code=${code ?? 'unknown'}`
   const detail = output ? `\n${output}` : ''
+  if (isOnnxDlopenFailure(output)) {
+    return new Error(
+      `${prefix}（${reason}）\n`
+      + '无法加载 onnxruntime-node 原生模块（ERR_DLOPEN_FAILED）。\n'
+      + '常见原因：1) 安装包未正确解出 onnxruntime.dll；2) 目标电脑缺少 VC++ 运行库。\n'
+      + '请安装 Microsoft Visual C++ Redistributable（x64）：https://aka.ms/vs/17/release/vc_redist.x64.exe\n'
+      + '然后重启应用再试。'
+      + detail,
+    )
+  }
   return new Error(`${prefix}（${reason}）${detail}`)
 }
 
@@ -243,6 +262,11 @@ function validateCustomNodePath(nodePath: string): void {
 function resolveAsarUnpackedPath(filePath: string): string {
   const unpacked = filePath.replace(/app\.asar([\\/])/g, 'app.asar.unpacked$1')
   return unpacked !== filePath && existsSync(unpacked) ? unpacked : filePath
+}
+
+/** 打包后始终映射到 unpacked 路径（不回退 asar），用于校验原生 DLL 是否真在磁盘上 */
+function toAsarUnpackedPath(filePath: string): string {
+  return filePath.replace(/app\.asar([\\/])/g, 'app.asar.unpacked$1')
 }
 
 function isPackagedApp(): boolean {
@@ -285,13 +309,60 @@ function resolvePackagedNodeModuleSearchPaths(): string[] {
 function resolveOnnxRuntimeNativeDir(): string | null {
   try {
     const packageJsonPath = require.resolve('onnxruntime-node/package.json')
-    const packageRoot = resolveAsarUnpackedPath(dirname(packageJsonPath))
+    const packageRoot = isPackagedApp()
+      ? dirname(toAsarUnpackedPath(packageJsonPath))
+      : dirname(packageJsonPath)
     const nativeDir = join(packageRoot, 'bin', 'napi-v6', process.platform, process.arch)
     return existsSync(nativeDir) ? nativeDir : null
   } catch (error) {
     console.warn('[ocr] resolve onnxruntime-node native dir failed:', error)
     return null
   }
+}
+
+function assertOnnxRuntimeNativeReady(): void {
+  const nativeDir = resolveOnnxRuntimeNativeDir()
+  if (!nativeDir) {
+    throw new Error(
+      '未找到 onnxruntime-node 原生目录（bin/napi-v6/...）。'
+      + (isPackagedApp()
+        ? '请确认安装包已正确解出 app.asar.unpacked/node_modules/onnxruntime-node。'
+        : '请重新安装依赖（pnpm install）。'),
+    )
+  }
+
+  if (isPackagedApp() && !nativeDir.includes('app.asar.unpacked')) {
+    throw new Error(
+      `onnxruntime 原生目录仍在 asar 内，无法被 Windows 加载：${nativeDir}\n`
+      + '请检查 electron-builder asarUnpack 是否包含 onnxruntime-node / *.dll。',
+    )
+  }
+
+  const bindingPath = join(nativeDir, 'onnxruntime_binding.node')
+  if (!existsSync(bindingPath)) {
+    throw new Error(`未找到 onnxruntime_binding.node：${bindingPath}`)
+  }
+
+  if (process.platform === 'win32') {
+    const requiredDlls = ['onnxruntime.dll']
+    const missing = requiredDlls.filter((name) => !existsSync(join(nativeDir, name)))
+    if (missing.length > 0) {
+      let listing = ''
+      try {
+        listing = readdirSync(nativeDir).join(', ')
+      } catch {
+        listing = '(无法读取目录)'
+      }
+      throw new Error(
+        `onnxruntime 原生目录缺少 DLL：${missing.join(', ')}\n`
+        + `目录：${nativeDir}\n`
+        + `现有文件：${listing}\n`
+        + '这通常是打包时 asarUnpack 未解出 DLL。请用最新安装包重装。',
+      )
+    }
+  }
+
+  console.log('[ocr] onnxruntime native ready:', nativeDir)
 }
 
 function createWorkerEnv(nodeInfo: OcrNodeRuntimeInfo): NodeJS.ProcessEnv {
@@ -338,6 +409,7 @@ function getWorker(): ChildProcess {
     validateCustomNodePath(nodeInfo.resolvedPath)
   }
   const workerScriptPath = resolveWorkerScriptPath(nodeInfo)
+  assertOnnxRuntimeNativeReady()
   console.log('[ocr] starting worker process:', { ...nodeInfo, workerScriptPath })
   const workerOutput = { stdout: '', stderr: '' }
   worker = fork(workerScriptPath, [], {

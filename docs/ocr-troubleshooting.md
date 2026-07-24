@@ -31,6 +31,31 @@
 
 因此问题不在模型文件或 PaddleOCR 初始化参数，而是 Electron 运行时中执行 `onnxruntime-node` 的 native 推理时可能触发崩溃。
 
+## Windows 打包后 ERR_DLOPEN_FAILED
+
+### 现象
+
+```text
+OCR 子进程异常退出（code=1）
+Error: The specified module could not be found.
+...\app.asar.unpacked\node_modules\onnxruntime-node\bin\napi-v6\win32\x64\onnxruntime_binding.node
+{ code: 'ERR_DLOPEN_FAILED' }
+```
+
+注意：Windows 在「文件本身存在，但依赖的 DLL 找不到」时，也会报 *The specified module could not be found*。
+
+### 原因
+
+1. 目标机未安装 **Microsoft Visual C++ Redistributable (x64)**
+2. 安装包未把 `onnxruntime.dll` 等与 `.node` 一起解到 `app.asar.unpacked`
+
+### 处理
+
+- **用户侧**：安装 https://aka.ms/vs/17/release/vc_redist.x64.exe 后重启应用
+- **打包侧**：`pnpm --filter flow-chat build:win`（会下载 VC++ 运行库并由 NSIS 静默安装）
+
+详见 `docs/windows-troubleshooting.md` 第 5 节。
+
 ## 当前处理方式
 
 OCR 已从 `worker_threads` 改为独立子进程执行。这样即使 native ONNX 崩溃，也尽量只退出 OCR 子进程，不带走 Electron 主进程。

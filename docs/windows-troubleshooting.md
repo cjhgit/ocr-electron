@@ -60,6 +60,44 @@ handshake failed; returned -1, SSL error code 1, net_error -100
 
 ---
 
+### 5. OCR 子进程 ERR_DLOPEN_FAILED（onnxruntime_binding.node）
+
+打包后在别人电脑上报错，日志类似：
+
+```text
+OCR 子进程异常退出（code=1）
+Error: The specified module could not be found.
+\\?\C:\Program Files\flow-chat\resources\app.asar.unpacked\node_modules\onnxruntime-node\bin\napi-v6\win32\x64\onnxruntime_binding.node
+code: 'ERR_DLOPEN_FAILED'
+```
+
+**原因**（二选一或同时存在）：
+
+1. **缺少 VC++ 运行库**：`onnxruntime.dll` 依赖 Microsoft Visual C++ Redistributable（x64）。开发机常已安装，干净的 Windows 可能没有。
+2. **DLL 未解包**：`.node` 在 `app.asar.unpacked`，但同目录的 `onnxruntime.dll` / `DirectML.dll` 仍在 asar 内，Windows 无法加载。
+
+**立刻可用的处理（给最终用户）**：
+
+1. 安装 [VC++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+2. 重启应用后再试 OCR
+
+**打包侧处理（给开发者）**：
+
+```bash
+# 推荐：打包 Windows 安装包前下载 VC++ 运行库，安装程序会静默安装
+pnpm --filter flow-chat download:vc-redist
+pnpm --filter flow-chat build:win
+```
+
+或手动把 `vc_redist.x64.exe` 放到 `apps/desktop/build/`，再执行普通 `build`。
+
+`electron-builder.yml` 已配置：
+
+- `asarUnpack` 包含 `**/onnxruntime-node/**` 与 `**/*.{node,dll,...}`
+- NSIS `build/installer.nsh` 在存在 `vc_redist.x64.exe` 时静默安装
+
+---
+
 ## GPU 模式
 
 通过环境变量 `ELECTRON_GPU_MODE` 切换，仅在 Windows 生效。
@@ -142,6 +180,12 @@ Vite 开发服务器绑定 `127.0.0.1:7777`，避免 Windows 上 `localhost` 的
 pnpm --filter flow-chat build
 ```
 
+Windows 正式包建议：
+
+```bash
+pnpm --filter flow-chat build:win
+```
+
 生产环境不走 Vite dev server，渲染文件位于 `out/renderer/`。若生产包白屏，优先确认是否正确执行了 `electron-vite build`。
 
 ---
@@ -151,3 +195,4 @@ pnpm --filter flow-chat build
 - [Electron #51363 — disableHardwareAcceleration 在 v38+ 不完全禁用 GPU](https://github.com/electron/electron/issues/51363)
 - [Electron #51817 — disableHardwareAcceleration 追加 --disable-gpu](https://github.com/electron/electron/pull/51817)
 - [electron-vite — Windows 生产构建白屏（路径问题）](https://github.com/alex8088/electron-vite/issues/460)
+- [onnxruntime #18971 — Windows 缺少 VC++ 运行库导致 ERR_DLOPEN_FAILED](https://github.com/microsoft/onnxruntime/issues/18971)

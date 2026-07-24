@@ -23,8 +23,10 @@ asarUnpack:
   - resources/**
   - out/main/ocr-worker.js
   - out/main/chunks/**
-  - node_modules/onnxruntime-node/**
-  - node_modules/onnxruntime-common/**
+  # pnpm 下路径可能落在 .pnpm/...，用 ** 兜住；Windows 必须把 DLL 和解包的 .node 放在同一真实目录
+  - '**/onnxruntime-node/**'
+  - '**/onnxruntime-common/**'
+  - '**/*.{node,dll,dylib,so}'
 win:
   executableName: 财务助手
   target:
@@ -41,6 +43,7 @@ nsis:
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
+  include: build/installer.nsh
 mac:
   artifactName: ${productName}_${version}.${ext}
   target:

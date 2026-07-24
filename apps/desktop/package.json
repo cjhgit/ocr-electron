@@ -19,6 +19,8 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build && electron-builder",
+    "build:win": "node scripts/download-vc-redist.mjs && electron-vite build && electron-builder --win",
+    "download:vc-redist": "node scripts/download-vc-redist.mjs",
     "preview": "electron-vite preview",
     "postinstall": "node node_modules/electron/install.js && electron-rebuild -f -w onnxruntime-node"
   },

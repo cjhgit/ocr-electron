@@ -34,6 +34,7 @@ import {
   openFinanceCheckSourceFile,
   sendFinanceCheckDownload,
   sendFinanceCheckImage,
+  updateFinanceCheckItem,
   type FinanceCheckTaskStatus,
 } from './finance-checker/service'
 import { clearErrorLogs, initErrorLogging, LOG_DIR } from './logger'
@@ -651,6 +652,22 @@ function createHttpServer() {
         overallStatus: query.overallStatus as never,
       }),
     }
+  })
+
+  router.post('/api/finance-check/tasks/:taskId/items/:itemId', async (ctx) => {
+    const body = ctx.request.body as {
+      adjustedPaidAmount?: string | null
+      adjustedMerchantAmount?: string | null
+      reviewRemark?: string | null
+      reviewStatus?: 'pass' | 'fail' | null
+    }
+    const item = await updateFinanceCheckItem(ctx.params.taskId, ctx.params.itemId, body)
+    if (!item) {
+      ctx.status = 404
+      ctx.body = { code: -1, message: '明细不存在' }
+      return
+    }
+    ctx.body = { code: 0, data: item }
   })
 
   router.post('/api/finance-check/tasks/:taskId/cancel', async (ctx) => {

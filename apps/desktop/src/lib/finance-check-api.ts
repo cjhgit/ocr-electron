@@ -40,6 +40,8 @@ export type FinanceCheckTask = {
   durationMs: number | null
 }
 
+export type FinanceCheckReviewStatus = 'pass' | 'fail'
+
 export type FinanceCheckTaskItem = {
   id: string
   rowNumber: number
@@ -51,6 +53,10 @@ export type FinanceCheckTaskItem = {
   expectedPaidAmount: string | null
   expectedMerchantAmount: string | null
   remark: string | null
+  adjustedPaidAmount: string | null
+  adjustedMerchantAmount: string | null
+  reviewRemark: string | null
+  reviewStatus: FinanceCheckReviewStatus | null
   overallStatus: FinanceCheckResultStatus
   paymentCheckStatus: FinanceCheckResultStatus | null
   paymentExpected: string | null
@@ -62,6 +68,13 @@ export type FinanceCheckTaskItem = {
   merchantActual: string | null
   merchantMessage: string | null
   merchantCheckDetails: Record<string, unknown> | null
+}
+
+export type FinanceCheckItemReviewUpdate = {
+  adjustedPaidAmount?: string | null
+  adjustedMerchantAmount?: string | null
+  reviewRemark?: string | null
+  reviewStatus?: FinanceCheckReviewStatus | null
 }
 
 type ApiResponse<T> = {
@@ -131,6 +144,18 @@ export function fetchFinanceCheckTaskItems(
   return request<{ items: FinanceCheckTaskItem[]; total: number }>(
     `/api/finance-check/tasks/${taskId}/items?${query}`,
   )
+}
+
+export function updateFinanceCheckTaskItem(
+  taskId: string,
+  itemId: string,
+  update: FinanceCheckItemReviewUpdate,
+) {
+  return request<FinanceCheckTaskItem>(`/api/finance-check/tasks/${taskId}/items/${itemId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(update),
+  })
 }
 
 export function cancelFinanceCheckTask(taskId: string) {

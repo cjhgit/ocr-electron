@@ -21,6 +21,8 @@ export type FinanceCheckTaskStatus = 'pending' | 'running' | 'succeeded' | 'fail
 
 export type FinanceCheckSummary = Record<CheckStatus, number>
 
+export type FinanceCheckReviewStatus = 'pass' | 'fail'
+
 export type FinanceCheckTaskItem = {
   id: string
   rowNumber: number
@@ -32,6 +34,10 @@ export type FinanceCheckTaskItem = {
   expectedPaidAmount: string | null
   expectedMerchantAmount: string | null
   remark: string | null
+  adjustedPaidAmount: string | null
+  adjustedMerchantAmount: string | null
+  reviewRemark: string | null
+  reviewStatus: FinanceCheckReviewStatus | null
   overallStatus: CheckStatus
   paymentCheckStatus: CheckStatus | null
   paymentExpected: string | null
@@ -43,6 +49,13 @@ export type FinanceCheckTaskItem = {
   merchantActual: string | null
   merchantMessage: string | null
   merchantCheckDetails: Record<string, unknown> | null
+}
+
+export type FinanceCheckItemReviewUpdate = {
+  adjustedPaidAmount?: string | null
+  adjustedMerchantAmount?: string | null
+  reviewRemark?: string | null
+  reviewStatus?: FinanceCheckReviewStatus | null
 }
 
 export type FinanceCheckTask = {
@@ -183,6 +196,10 @@ function itemFromRowResult(taskId: string, rowResult: RowCheckResult): FinanceCh
     expectedPaidAmount: stringifyAmount(rowResult.row.expectedPaidAmount),
     expectedMerchantAmount: stringifyAmount(rowResult.row.expectedMerchantAmount),
     remark: rowResult.row.remark,
+    adjustedPaidAmount: null,
+    adjustedMerchantAmount: null,
+    reviewRemark: null,
+    reviewStatus: null,
     overallStatus: overallStatus(rowResult),
     paymentCheckStatus: payment?.status ?? null,
     paymentExpected: stringifyAmount(payment?.expected ?? null),
@@ -391,6 +408,25 @@ export async function getFinanceCheckTask(taskId: string): Promise<FinanceCheckT
   const store = await readStore()
   const task = store.tasks.find((item) => item.id === taskId)
   return task ? publicTask(task) : null
+}
+
+export async function updateFinanceCheckItem(
+  taskId: string,
+  itemId: string,
+  update: FinanceCheckItemReviewUpdate,
+): Promise<FinanceCheckTaskItem | null> {
+  const items = await readItems(taskId)
+  const index = items.findIndex((item) => item.id === itemId)
+  if (index < 0) return null
+
+  const item = items[index]
+  if (update.adjustedPaidAmount !== undefined) item.adjustedPaidAmount = update.adjustedPaidAmount
+  if (update.adjustedMerchantAmount !== undefined) item.adjustedMerchantAmount = update.adjustedMerchantAmount
+  if (update.reviewRemark !== undefined) item.reviewRemark = update.reviewRemark
+  if (update.reviewStatus !== undefined) item.reviewStatus = update.reviewStatus
+  items[index] = item
+  await writeItems(taskId, items)
+  return item
 }
 
 export async function listFinanceCheckItems(params: {

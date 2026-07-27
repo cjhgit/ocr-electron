@@ -6,6 +6,17 @@ import { decode as decodePng } from 'fast-png'
 import { getModelPreset, PaddleOcrService } from 'paddleocr'
 import { getModelAsset, type OcrModelVariant } from './config'
 
+/**
+ * PP-OCRv6_* presets use detection.limitType="min": when the short side is already
+ * >= 736, the detector barely downscales. A 3024x4032 image becomes ~3008x4000
+ * (~138MB float32 tensor) and can SIGTRAP onnxruntime-node.
+ *
+ * Keep long-side inputs bounded, and force detection resize to "max".
+ */
+const OCR_INPUT_MAX_LONG_SIDE = 1920
+const OCR_DETECTION_MAX_SIDE_LENGTH = 960
+const OCR_DETECTION_MAX_SIDE_LIMIT = 1920
+
 function toArrayBuffer(buffer: Buffer): ArrayBuffer {
   return buffer.buffer.slice(
     buffer.byteOffset,
@@ -32,6 +43,37 @@ export type OcrRuntimeOptions = {
 
 let cachedKey: string | null = null
 let cachedOcr: PaddleOcrService | null = null
+
+function downscaleImageIfNeeded(image: OcrImageInput, maxLongSide = OCR_INPUT_MAX_LONG_SIDE): OcrImageInput {
+  const longSide = Math.max(image.width, image.height)
+  if (longSide <= maxLongSide) {
+    return image
+  }
+
+  const scale = maxLongSide / longSide
+  const width = Math.max(1, Math.round(image.width * scale))
+  const height = Math.max(1, Math.round(image.height * scale))
+  const data = new Uint8Array(width * height * 4)
+
+  // Nearest-neighbor is enough: detector will resize again.
+  for (let y = 0; y < height; y += 1) {
+    const sourceY = Math.min(image.height - 1, Math.floor(y / scale))
+    for (let x = 0; x < width; x += 1) {
+      const sourceX = Math.min(image.width - 1, Math.floor(x / scale))
+      const sourceIndex = (sourceY * image.width + sourceX) * 4
+      const targetIndex = (y * width + x) * 4
+      data[targetIndex] = image.data[sourceIndex] ?? 0
+      data[targetIndex + 1] = image.data[sourceIndex + 1] ?? 0
+      data[targetIndex + 2] = image.data[sourceIndex + 2] ?? 0
+      data[targetIndex + 3] = image.data[sourceIndex + 3] ?? 255
+    }
+  }
+
+  console.log(
+    `[ocr] downscaled input: ${image.width}x${image.height} -> ${width}x${height} (maxLongSide=${maxLongSide})`,
+  )
+  return { width, height, data }
+}
 
 async function getOcrInstance(modelRoot: string, variant: OcrModelVariant) {
   const key = `${modelRoot}:${variant}`
@@ -62,6 +104,10 @@ async function getOcrInstance(modelRoot: string, variant: OcrModelVariant) {
     modelPreset: asset.preset,
     detection: {
       modelBuffer: toArrayBuffer(detModel),
+      // Override v6 preset limitType="min", which keeps large photos near full resolution.
+      limitType: 'max',
+      maxSideLength: OCR_DETECTION_MAX_SIDE_LENGTH,
+      maxSideLimit: OCR_DETECTION_MAX_SIDE_LIMIT,
     },
     recognition: {
       modelBuffer: toArrayBuffer(recModel),
@@ -75,15 +121,25 @@ async function getOcrInstance(modelRoot: string, variant: OcrModelVariant) {
 }
 
 export async function recognizeText(options: OcrRecognizeOptions) {
-  const { modelRoot, variant, image } = options
+  const { modelRoot, variant } = options
+  const image = downscaleImageIfNeeded(options.image)
   console.log(`[ocr] recognize input: variant=${variant}, size=${image.width}x${image.height}, data=${image.data.length}`)
   const ocr = await getOcrInstance(modelRoot, variant)
 
-  const results = await ocr.recognize({
-    width: image.width,
-    height: image.height,
-    data: image.data,
-  })
+  const results = await ocr.recognize(
+    {
+      width: image.width,
+      height: image.height,
+      data: image.data,
+    },
+    {
+      detection: {
+        limitType: 'max',
+        maxSideLength: OCR_DETECTION_MAX_SIDE_LENGTH,
+        maxSideLimit: OCR_DETECTION_MAX_SIDE_LIMIT,
+      },
+    },
+  )
   console.log(`[ocr] recognize finished: variant=${variant}, boxes=${results.length}`)
 
   return ocr.processRecognition(results)

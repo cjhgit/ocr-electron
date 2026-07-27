@@ -67,6 +67,8 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
   return btoa(binary)
 }
 
+const OCR_INPUT_MAX_LONG_SIDE = 1920
+
 export async function loadImagePixels(file: File): Promise<{
   width: number
   height: number
@@ -82,16 +84,23 @@ export async function loadImagePixels(file: File): Promise<{
       img.src = objectUrl
     })
 
+    const longSide = Math.max(image.naturalWidth, image.naturalHeight)
+    const scale = longSide > OCR_INPUT_MAX_LONG_SIDE
+      ? OCR_INPUT_MAX_LONG_SIDE / longSide
+      : 1
+    const width = Math.max(1, Math.round(image.naturalWidth * scale))
+    const height = Math.max(1, Math.round(image.naturalHeight * scale))
+
     const canvas = document.createElement('canvas')
-    canvas.width = image.naturalWidth
-    canvas.height = image.naturalHeight
+    canvas.width = width
+    canvas.height = height
 
     const context = canvas.getContext('2d')
     if (!context) {
       throw new Error('无法创建画布')
     }
 
-    context.drawImage(image, 0, 0)
+    context.drawImage(image, 0, 0, width, height)
     const imageData = context.getImageData(0, 0, canvas.width, canvas.height)
 
     return {

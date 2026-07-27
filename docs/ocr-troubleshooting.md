@@ -56,6 +56,34 @@ Error: The specified module could not be found.
 
 详见 `docs/windows-troubleshooting.md` 第 5 节。
 
+## 大图 SIGTRAP（v6_tiny / v6_*）
+
+### 现象
+
+对账时小图（如 `1280x1707`）正常，遇到大图（如 `3024x4032`）后 OCR 子进程退出：
+
+```text
+[ocr] recognize input: variant=v6_tiny, size=3024x4032, data=48771072
+[ocr] worker process exited: { code: null, signal: 'SIGTRAP' }
+```
+
+### 原因
+
+不是 Excel 文件体积本身，而是图片分辨率。`PP-OCRv6_*` 检测预设使用 `limitType: "min"`：短边已经 ≥736 时几乎不缩小，只靠 `maxSideLimit=4000` 略压长边。`3024x4032` 会变成约 `3008x4000` 的 det 输入，float32 张量约 138MB，`onnxruntime-node` 原生层易触发 `SIGTRAP`。
+
+### 处理
+
+`apps/desktop/electron/main/ocr/engine.ts` 已做双保险：
+
+1. OCR 前将长边限制到 1920
+2. 覆盖 detection：`limitType: "max"`，`maxSideLength: 960`，`maxSideLimit: 1920`
+
+复测时可看是否出现：
+
+```text
+[ocr] downscaled input: 3024x4032 -> 1440x1920 (maxLongSide=1920)
+```
+
 ## 当前处理方式
 
 OCR 已从 `worker_threads` 改为独立子进程执行。这样即使 native ONNX 崩溃，也尽量只退出 OCR 子进程，不带走 Electron 主进程。

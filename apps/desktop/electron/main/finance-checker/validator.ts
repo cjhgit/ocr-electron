@@ -6,7 +6,7 @@ import {
   parseMerchantScreenshot,
   parsePaymentScreenshot,
 } from './ocr-parser'
-import { FINANCE_CHECK_ROW_CONCURRENCY } from './constants'
+import { FINANCE_CHECK_AMOUNT_TOLERANCE, FINANCE_CHECK_ROW_CONCURRENCY } from './constants'
 import {
   parseStructuredScreenshot,
   type StructuredScreenshot,
@@ -24,8 +24,6 @@ import {
   loadImageIdMap,
   WorkbookImageExtractor,
 } from './xlsx-images'
-
-const AMOUNT_TOLERANCE = 0.01
 
 function formatLogDuration(startedAt: number): string {
   return `${Date.now() - startedAt}ms`
@@ -118,7 +116,7 @@ export class FinanceChecker {
   private readonly merchantCache = new Map<string, Promise<Map<string, number>>>()
 
   constructor(options: FinanceCheckerOptions) {
-    this.tolerance = options.tolerance ?? AMOUNT_TOLERANCE
+    this.tolerance = options.tolerance ?? FINANCE_CHECK_AMOUNT_TOLERANCE
     this.ocrRecognizeProvider = options.ocrRecognizeProvider
   }
 

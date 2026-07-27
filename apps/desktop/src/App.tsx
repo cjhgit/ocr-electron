@@ -119,6 +119,8 @@ const STATUS_OPTIONS: Array<{ value: FinanceCheckTaskStatus | 'all'; label: stri
 
 const FINANCE_CHECK_EXAMPLE_XLSX_URL =
   'https://ai-html.obs.cn-south-1.myhuaweicloud.com:443/finance-checker/example.xlsx'
+const FINANCE_CHECK_AMOUNT_TOLERANCE = 0.05
+const AMOUNT_COMPARE_EPSILON = 1e-9
 
 const REMARK_QUICK_OPTIONS = [
   '截图缺少对应实付截图',
@@ -412,7 +414,7 @@ function amountsVisuallyDiffer(input: string, aiActual: string | null): boolean 
   const leftNum = Number(left)
   const rightNum = Number(right)
   if (Number.isFinite(leftNum) && Number.isFinite(rightNum)) {
-    return Math.abs(leftNum - rightNum) > 0.001
+    return Math.abs(leftNum - rightNum) > FINANCE_CHECK_AMOUNT_TOLERANCE + AMOUNT_COMPARE_EPSILON
   }
   return true
 }

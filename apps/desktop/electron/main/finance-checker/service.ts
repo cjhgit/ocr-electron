@@ -7,7 +7,7 @@ import { nanoid } from 'nanoid'
 import type { Context } from 'koa'
 import type { OcrModelVariant } from '../ocr/config'
 import { recognizeImageFromPath, setDefaultOcrRuntime } from '../ocr/service'
-import { FINANCE_CHECK_ROW_CONCURRENCY, FINANCE_CHECK_TOLERANCE } from './constants'
+import { FINANCE_CHECK_AMOUNT_TOLERANCE, FINANCE_CHECK_ROW_CONCURRENCY } from './constants'
 import {
   auditOutputFilename,
   writeAuditWorkbook,
@@ -386,7 +386,7 @@ export async function createFinanceCheckTask(payload: {
     sheetName: null,
     modelRoot: payload.modelRoot,
     modelVariant: payload.modelVariant,
-    tolerance: FINANCE_CHECK_TOLERANCE,
+    tolerance: FINANCE_CHECK_AMOUNT_TOLERANCE,
     rowConcurrency: payload.rowConcurrency,
     summary: null,
     totalRows: null,

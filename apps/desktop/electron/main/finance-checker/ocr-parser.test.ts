@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
+  amountsEqual,
   normalizeCouponCode,
   parseMerchantScreenshot,
 } from './ocr-parser'
+
+describe('amountsEqual', () => {
+  it('allows differences exactly on the tolerance boundary', () => {
+    expect(amountsEqual(1.2, 1.15, 0.05)).toBe(true)
+    expect(amountsEqual(1.2, 1.149999, 0.05)).toBe(false)
+  })
+})
 
 describe('parseMerchantScreenshot', () => {
   it('matches merchant revenues for voucher codes displayed without the leading zero', () => {

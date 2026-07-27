@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   Bug,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ClipboardCheck,
@@ -18,6 +19,7 @@ import {
   MoreHorizontal,
   RefreshCw,
   ScanSearch,
+  Settings,
   Trash2,
   Upload,
   X,
@@ -117,6 +119,16 @@ const STATUS_OPTIONS: Array<{ value: FinanceCheckTaskStatus | 'all'; label: stri
 
 const FINANCE_CHECK_EXAMPLE_XLSX_URL =
   'https://ai-html.obs.cn-south-1.myhuaweicloud.com:443/finance-checker/example.xlsx'
+
+const REMARK_QUICK_OPTIONS = [
+  '截图缺少对应实付截图',
+  '实付金额已修改',
+  '实收截图和金额已修改',
+  '实付截图模糊',
+  '实付截图附错',
+  '实付截图缺少实付金额',
+  '实收截图单号与单号不一致',
+] as const
 
 const ITEM_STATUS_OPTIONS: Array<{ value: FinanceCheckResultStatus | 'all'; label: string }> = [
   { value: 'all', label: '全部结果' },
@@ -358,8 +370,85 @@ function aiReviewStatusClass(status: FinanceCheckResultStatus): string {
   return 'text-muted-foreground'
 }
 
+function formatAiAuditText(item: FinanceCheckTaskItem): string {
+  if (item.overallStatus === 'pass') return 'AI 审核通过'
+
+  const parts: string[] = []
+  for (const check of [
+    {
+      status: item.paymentCheckStatus,
+      fieldName: '推单实付金额',
+      message: item.paymentMessage,
+      expected: item.paymentExpected,
+      actual: item.paymentActual,
+    },
+    {
+      status: item.merchantCheckStatus,
+      fieldName: '商家实收',
+      message: item.merchantMessage,
+      expected: item.merchantExpected,
+      actual: item.merchantActual,
+    },
+  ]) {
+    if (!check.message) continue
+    if (check.status === 'fail' || check.status === 'error') {
+      parts.push(`${check.fieldName}：${check.message} (表格=${check.expected ?? '-'}, 截图=${check.actual ?? '-'})`)
+    } else {
+      parts.push(`${check.fieldName}：${check.message}`)
+    }
+  }
+
+  const statusLabel = item.overallStatus === 'skip' ? '跳过' : '不通过'
+  const reason = parts.length > 0 ? parts.join('；') : '无校验项'
+  return `AI 审核${statusLabel}：${reason}`
+}
+
+function amountsVisuallyDiffer(input: string, aiActual: string | null): boolean {
+  if (aiActual == null || aiActual.trim() === '') return false
+  const left = input.trim()
+  const right = aiActual.trim()
+  if (left === right) return false
+  const leftNum = Number(left)
+  const rightNum = Number(right)
+  if (Number.isFinite(leftNum) && Number.isFinite(rightNum)) {
+    return Math.abs(leftNum - rightNum) > 0.001
+  }
+  return true
+}
+
+function AiAmountHint({
+  aiActual,
+  draftValue,
+  onApply,
+}: {
+  aiActual: string | null
+  draftValue: string
+  onApply: (value: string) => void
+}) {
+  if (aiActual == null || aiActual.trim() === '') return null
+  const differs = amountsVisuallyDiffer(draftValue, aiActual)
+  return (
+    <div className="flex flex-nowrap items-center gap-2 whitespace-nowrap text-xs">
+      <span className={differs ? 'text-destructive' : 'text-emerald-600 dark:text-emerald-400'}>
+        AI 识别结果：{aiActual}
+      </span>
+      {differs && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-6 shrink-0 px-2 text-xs"
+          onClick={() => onApply(aiActual)}
+        >
+          使用 AI 结果
+        </Button>
+      )}
+    </div>
+  )
+}
+
 function manualReviewStatusLabel(status: FinanceCheckReviewStatus): string {
-  return status === 'pass' ? '人工通过' : '人工不通过'
+  return status === 'pass' ? '通过' : '不通过'
 }
 
 function ManualReviewTag({ status }: { status: FinanceCheckReviewStatus }) {
@@ -375,10 +464,10 @@ function ManualReviewTag({ status }: { status: FinanceCheckReviewStatus }) {
 }
 
 function ModifiedAmountCell({ display, original }: { display: string; original: string | null }) {
-  if (!original) return <span>{display}</span>
+  if (!original) return <span className="text-blue-600 dark:text-blue-400">{display}</span>
   return (
     <Tooltip>
-      <TooltipTrigger render={<span className="cursor-default text-destructive" />}>
+      <TooltipTrigger render={<span className="cursor-default text-blue-600 dark:text-blue-400" />}>
         {display}
       </TooltipTrigger>
       <TooltipContent>原始值：{original}</TooltipContent>
@@ -1125,12 +1214,14 @@ function FinanceCheckPage({
   financeCheckRowConcurrency,
   modelInfo,
   onOpenSettings,
+  onReconcileModeChange,
 }: {
   modelRoot: string
   variant: OcrModelVariant
   financeCheckRowConcurrency: number
   modelInfo: OcrServerModelInfo | null
   onOpenSettings: () => void
+  onReconcileModeChange?: (active: boolean) => void
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [tasks, setTasks] = useState<FinanceCheckTask[]>([])
@@ -1240,15 +1331,6 @@ function FinanceCheckPage({
     } finally {
       setUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
-    }
-  }
-
-  async function handleOpenSourceFile(taskId: string) {
-    setError('')
-    try {
-      await openFinanceCheckSourceFile(taskId)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '打开原文件失败')
     }
   }
 
@@ -1363,6 +1445,7 @@ function FinanceCheckPage({
       cancelling={cancellingTaskIds.has(selectedTaskId)}
       onCancel={() => void handleCancelTask(selectedTaskId)}
       onCancellingResolved={() => clearCancellingTask(selectedTaskId)}
+      onReconcileModeChange={onReconcileModeChange}
       onBack={() => {
         setSelectedTaskId(null)
         void refresh()
@@ -1522,9 +1605,6 @@ function FinanceCheckPage({
                   <TableCell>{formatTime(task.createdAt)}</TableCell>
                   <TableCell>
                     <div className={rowActionsClass}>
-                      {/* <Button type="button" variant="ghost" size="sm" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button> */}
-                      <Button type="button" variant="ghost" size="sm" onClick={() => void handleOpenSourceFile(task.id)}><FolderOpen size={14} />原文件</Button>
-                      {task.taskStatus === 'succeeded' && task.resultDownloadUrl && <a className={buttonVariants({ variant: 'ghost', size: 'sm' })} href={task.resultDownloadUrl}><Download size={14} />下载</a>}
                       {(task.taskStatus === 'pending' || task.taskStatus === 'running') && !isCancelling
                         ? (
                             <Button type="button" variant="ghost" size="sm" className={dangerClass} onClick={() => void handleCancelTask(task.id)}>
@@ -1585,6 +1665,7 @@ function FinanceCheckReconcileView({
 
   const selectedItem = items[selectedIndex] ?? null
   const aiPassPendingCount = items.filter((item) => item.overallStatus === 'pass' && item.reviewStatus !== 'pass').length
+  const reviewedCount = items.filter((item) => item.reviewStatus != null).length
 
   useEffect(() => {
     let cancelled = false
@@ -1693,23 +1774,39 @@ function FinanceCheckReconcileView({
             <ArrowLeft size={18} />
           </Button>
           <div className="min-w-0 flex-1">
-            <h2 className="truncate text-base font-semibold">{task.sourceFileName} · 人工对账</h2>
-            <p className="text-xs text-muted-foreground">
-              {items.length > 0 ? `第 ${selectedIndex + 1} / ${items.length} 条` : '暂无明细'}
-            </p>
+            <h2 className="truncate text-base font-semibold">
+              {task.sourceFileName} · 人工对账
+              {!loading && items.length > 0 && (
+                <span className="ml-2 font-normal text-muted-foreground">已完成 {reviewedCount}/{items.length}</span>
+              )}
+            </h2>
           </div>
           {!loading && items.length > 0 && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={bulkApproving || saving || aiPassPendingCount <= 0}
-              onClick={() => void approveAllAiPassed()}
-            >
-              <Check size={14} />
-              通过所有 AI 审核通过的记录
-              {aiPassPendingCount > 0 ? `（${aiPassPendingCount}）` : ''}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" variant="outline" size="sm" disabled={selectedIndex <= 0 || saving || bulkApproving} onClick={() => void navigateTo(selectedIndex - 1)}>
+                <ChevronLeft size={14} />上一条
+              </Button>
+              <Button type="button" variant="outline" size="sm" disabled={selectedIndex >= items.length - 1 || saving || bulkApproving} onClick={() => void navigateTo(selectedIndex + 1)}>
+                下一条<ChevronRight size={14} />
+              </Button>
+              <Button type="button" size="sm" disabled={saving || bulkApproving} onClick={() => void handleReview('pass')}>
+                <Check size={14} />审核通过
+              </Button>
+              <Button type="button" variant="destructive" size="sm" disabled={saving || bulkApproving} onClick={() => void handleReview('fail')}>
+                <X size={14} />审核不通过
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={bulkApproving || saving || aiPassPendingCount <= 0}
+                onClick={() => void approveAllAiPassed()}
+              >
+                <Check size={14} />
+                通过所有 AI 审核通过的记录
+                {aiPassPendingCount > 0 ? `（${aiPassPendingCount}）` : ''}
+              </Button>
+            </div>
           )}
         </div>
 
@@ -1720,128 +1817,152 @@ function FinanceCheckReconcileView({
         ) : items.length === 0 ? (
           <Card><CardContent className="py-8 text-center text-muted-foreground">暂无明细数据</CardContent></Card>
         ) : (
-          <div className="flex min-h-[calc(100vh-140px)] gap-3 max-lg:flex-col">
-            <Card className="w-80 shrink-0 max-lg:w-full">
-              <CardHeader className="px-4 py-3">
+          <div className="flex h-[calc(100vh-72px)] gap-3 max-lg:h-auto max-lg:min-h-[calc(100vh-72px)] max-lg:flex-col">
+            <Card className="flex w-72 shrink-0 flex-col max-lg:w-full">
+              <CardHeader className="px-3 py-2">
                 <CardTitle className="text-sm">明细列表</CardTitle>
+                <CardAction>
+                  <span className="text-xs leading-6 text-muted-foreground">
+                    {items.length > 0 ? `第 ${selectedIndex + 1} / ${items.length} 条` : '暂无明细'}
+                  </span>
+                </CardAction>
               </CardHeader>
-              <CardContent className="p-0">
-                <div className="max-h-[calc(100vh-180px)] overflow-y-auto border-t">
-                  {items.map((item, index) => {
-                    const paid = displayAmount(item, 'paid')
-                    const merchant = displayAmount(item, 'merchant')
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        className={cn(
-                          'flex w-full flex-col gap-1 border-b px-4 py-2.5 text-left text-sm transition-colors hover:bg-muted/50',
-                          index === selectedIndex && 'bg-muted',
-                        )}
-                        onClick={() => void navigateTo(index)}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <span className="font-medium">第 {item.rowNumber} 行</span>
-                          <div className="flex flex-col items-end gap-2.5">
-                            {item.reviewStatus && <ManualReviewTag status={item.reviewStatus} />}
-                            <span className={cn('text-[10px] leading-none', aiReviewStatusClass(item.overallStatus))}>
-                              {aiReviewStatusLabel(item.overallStatus)}
-                            </span>
-                          </div>
+              <CardContent className="min-h-0 flex-1 p-0">
+                <div className="h-full max-h-[calc(100vh-112px)] overflow-y-auto border-t max-lg:max-h-80">
+                  {items.map((item, index) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={cn(
+                        'flex w-full flex-col gap-0.5 border-b px-3 py-1.5 text-left text-sm transition-colors hover:bg-muted/50',
+                        index === selectedIndex && 'bg-muted',
+                      )}
+                      onClick={() => void navigateTo(index)}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="font-medium">第 {item.rowNumber} 行</span>
+                        <div className="flex shrink-0 flex-col items-end gap-1">
+                          {item.reviewStatus && <ManualReviewTag status={item.reviewStatus} />}
+                          <span className={cn('text-[10px] leading-none', aiReviewStatusClass(item.overallStatus))}>
+                            {aiReviewStatusLabel(item.overallStatus)}
+                          </span>
                         </div>
-                        <span className="truncate text-muted-foreground">{item.couponCode ?? '-'}</span>
-                        <span className="text-xs text-muted-foreground">
-                          实付 {paid.display} · 实收 {merchant.display}
-                        </span>
-                      </button>
-                    )
-                  })}
+                      </div>
+                      <span className="truncate text-xs text-muted-foreground">{item.couponCode ?? '-'}</span>
+                    </button>
+                  ))}
                 </div>
               </CardContent>
             </Card>
 
-            <Card className="flex min-w-0 flex-1 flex-col">
-              <CardContent className="flex flex-1 flex-col gap-3 p-4">
+            <Card className="flex min-h-0 min-w-0 flex-1 flex-col">
+              <CardContent className="flex min-h-0 flex-1 flex-col gap-3 p-4">
                 {selectedItem && (
                   <>
-                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                    <p className={cn('shrink-0 truncate text-sm', aiReviewStatusClass(selectedItem.overallStatus))} title={formatAiAuditText(selectedItem)}>
+                      {formatAiAuditText(selectedItem)}
+                    </p>
+
+                    <div className="grid shrink-0 grid-cols-2 gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto_minmax(0,1.4fr)]">
                       <label className={fieldClass}>
                         <span>核销券码</span>
                         <p className="truncate rounded-md border bg-muted/40 px-3 py-2 text-sm">{selectedItem.couponCode ?? '-'}</p>
                       </label>
-                      <label className={fieldClass}>
+                      <div className={fieldClass}>
                         <span>推单实付金额</span>
                         <Input
-                          className="h-9"
+                          className={cn(
+                            'h-9 w-24',
+                            buildAdjustedAmount(draftPaid, selectedItem.expectedPaidAmount) != null
+                              && 'border-blue-500 focus-visible:border-blue-500 focus-visible:ring-blue-500/20 dark:border-blue-400',
+                          )}
                           value={draftPaid}
                           onChange={(event) => setDraftPaid(event.target.value)}
                           placeholder={selectedItem.expectedPaidAmount ?? ''}
                         />
-                      </label>
-                      <label className={fieldClass}>
+                        <AiAmountHint
+                          aiActual={selectedItem.paymentActual}
+                          draftValue={draftPaid}
+                          onApply={setDraftPaid}
+                        />
+                      </div>
+                      <div className={fieldClass}>
                         <span>商家实收</span>
                         <Input
-                          className="h-9"
+                          className={cn(
+                            'h-9 w-24',
+                            buildAdjustedAmount(draftMerchant, selectedItem.expectedMerchantAmount) != null
+                              && 'border-blue-500 focus-visible:border-blue-500 focus-visible:ring-blue-500/20 dark:border-blue-400',
+                          )}
                           value={draftMerchant}
                           onChange={(event) => setDraftMerchant(event.target.value)}
                           placeholder={selectedItem.expectedMerchantAmount ?? ''}
                         />
-                      </label>
-                      <label className={fieldClass}>
-                        <span>备注</span>
-                        <Input
-                          className="h-9"
-                          value={draftRemark}
-                          onChange={(event) => setDraftRemark(event.target.value)}
-                          placeholder="人工对账备注"
+                        <AiAmountHint
+                          aiActual={selectedItem.merchantActual}
+                          draftValue={draftMerchant}
+                          onApply={setDraftMerchant}
                         />
-                      </label>
+                      </div>
+                      <div className={fieldClass}>
+                        <span>备注</span>
+                        <div className="flex gap-2">
+                          <Input
+                            className="h-9 min-w-0 flex-1"
+                            value={draftRemark}
+                            onChange={(event) => setDraftRemark(event.target.value)}
+                            placeholder="人工对账备注"
+                          />
+                          <DropdownMenu>
+                            <DropdownMenuTrigger
+                              render={(
+                                <Button type="button" variant="outline" className="h-9 shrink-0 px-2.5">
+                                  快速选择
+                                  <ChevronDown size={14} />
+                                </Button>
+                              )}
+                            />
+                            <DropdownMenuContent align="end" className="min-w-max">
+                              {REMARK_QUICK_OPTIONS.map((option) => (
+                                <DropdownMenuItem key={option} className="whitespace-nowrap" onClick={() => setDraftRemark(option)}>
+                                  {option}
+                                </DropdownMenuItem>
+                              ))}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      </div>
                     </div>
 
                     <div className="grid min-h-0 flex-1 grid-cols-2 gap-4 max-md:grid-cols-1">
-                      <div className={fieldClass}>
+                      <div className={cn(fieldClass, 'min-h-0')}>
                         <span>实付券码截图</span>
                         {paymentImageUrl ? (
                           <button
                             type="button"
-                            className="flex min-h-48 items-center justify-center overflow-hidden rounded-lg border bg-muted/30 transition hover:bg-muted/50"
+                            className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-lg border bg-muted/30 transition hover:bg-muted/50"
                             onClick={() => setImageTarget({ title: `第 ${selectedItem.rowNumber} 行 · 实付券码`, url: paymentImageUrl })}
                           >
-                            <img src={paymentImageUrl} alt="实付券码截图" className="max-h-64 max-w-full object-contain" />
+                            <img src={paymentImageUrl} alt="实付券码截图" className="max-h-full max-w-full object-contain" />
                           </button>
                         ) : (
-                          <div className="flex min-h-48 items-center justify-center rounded-lg border bg-muted/20 text-muted-foreground">暂无图片</div>
+                          <div className="flex min-h-48 flex-1 items-center justify-center rounded-lg border bg-muted/20 text-muted-foreground">暂无图片</div>
                         )}
                       </div>
-                      <div className={fieldClass}>
+                      <div className={cn(fieldClass, 'min-h-0')}>
                         <span>商家实收截图</span>
                         {merchantImageUrl ? (
                           <button
                             type="button"
-                            className="flex min-h-48 items-center justify-center overflow-hidden rounded-lg border bg-muted/30 transition hover:bg-muted/50"
+                            className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-lg border bg-muted/30 transition hover:bg-muted/50"
                             onClick={() => setImageTarget({ title: `第 ${selectedItem.rowNumber} 行 · 商家实收`, url: merchantImageUrl })}
                           >
-                            <img src={merchantImageUrl} alt="商家实收截图" className="max-h-64 max-w-full object-contain" />
+                            <img src={merchantImageUrl} alt="商家实收截图" className="max-h-full max-w-full object-contain" />
                           </button>
                         ) : (
-                          <div className="flex min-h-48 items-center justify-center rounded-lg border bg-muted/20 text-muted-foreground">暂无图片</div>
+                          <div className="flex min-h-48 flex-1 items-center justify-center rounded-lg border bg-muted/20 text-muted-foreground">暂无图片</div>
                         )}
                       </div>
-                    </div>
-
-                    <div className={actionsClass}>
-                      <Button type="button" variant="outline" disabled={selectedIndex <= 0 || saving || bulkApproving} onClick={() => void navigateTo(selectedIndex - 1)}>
-                        <ChevronLeft size={16} />上一条
-                      </Button>
-                      <Button type="button" variant="outline" disabled={selectedIndex >= items.length - 1 || saving || bulkApproving} onClick={() => void navigateTo(selectedIndex + 1)}>
-                        下一条<ChevronRight size={16} />
-                      </Button>
-                      <Button type="button" disabled={saving || bulkApproving} onClick={() => void handleReview('pass')}>
-                        <Check size={16} />审核通过
-                      </Button>
-                      <Button type="button" variant="destructive" disabled={saving || bulkApproving} onClick={() => void handleReview('fail')}>
-                        <X size={16} />审核不通过
-                      </Button>
                     </div>
                   </>
                 )}
@@ -1865,7 +1986,21 @@ function FinanceCheckReconcileView({
   )
 }
 
-function FinanceCheckDetail({ taskId, onBack, onCancel, onCancellingResolved, cancelling }: { taskId: string; onBack: () => void; onCancel: () => void; onCancellingResolved: () => void; cancelling: boolean }) {
+function FinanceCheckDetail({
+  taskId,
+  onBack,
+  onCancel,
+  onCancellingResolved,
+  cancelling,
+  onReconcileModeChange,
+}: {
+  taskId: string
+  onBack: () => void
+  onCancel: () => void
+  onCancellingResolved: () => void
+  cancelling: boolean
+  onReconcileModeChange?: (active: boolean) => void
+}) {
   const [reconcileMode, setReconcileMode] = useState(false)
   const [task, setTask] = useState<FinanceCheckTask | null>(null)
   const [items, setItems] = useState<FinanceCheckTaskItem[]>([])
@@ -1925,6 +2060,11 @@ function FinanceCheckDetail({ taskId, onBack, onCancel, onCancellingResolved, ca
   useEffect(() => {
     void refresh()
   }, [taskId, itemPage, itemStatusFilter])
+
+  useEffect(() => {
+    onReconcileModeChange?.(reconcileMode)
+    return () => onReconcileModeChange?.(false)
+  }, [reconcileMode, onReconcileModeChange])
 
   useEffect(() => {
     if (!cancelling && task?.taskStatus !== 'pending' && task?.taskStatus !== 'running') return
@@ -2046,7 +2186,7 @@ function FinanceCheckDetail({ taskId, onBack, onCancel, onCancellingResolved, ca
 
       <Card>
         <CardHeader>
-          <CardTitle>明细</CardTitle>
+          <CardTitle>任务明细</CardTitle>
           <CardDescription>共 {itemTotal} 条{pageCount > 1 ? ` · 第 ${itemPage}/${pageCount} 页` : ''}</CardDescription>
           <CardAction>
           <NativeSelect value={itemStatusFilter} onChange={(event) => {
@@ -2194,7 +2334,8 @@ function Info({ label, value }: { label: string; value: string }) {
 }
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'finance' | 'settings'>('finance')
+  const [showSettings, setShowSettings] = useState(false)
+  const [hideAppHeader, setHideAppHeader] = useState(false)
   const [modelRoot, setModelRoot] = useState('')
   const [variant, setVariant] = useState<OcrModelVariant>('v5_server')
   const [financeCheckRowConcurrency, setFinanceCheckRowConcurrency] = useState(5)
@@ -2225,14 +2366,6 @@ function App() {
 
     void loadConfig()
   }, [])
-
-  const tabs = useMemo(
-    () => [
-      { key: 'finance' as const, label: '对账' },
-      { key: 'settings' as const, label: '设置' },
-    ],
-    [],
-  )
 
   function normalizeFinanceCheckRowConcurrency(value: number): number {
     if (!Number.isFinite(value)) return 5
@@ -2297,37 +2430,41 @@ function App() {
   }
 
   return (
-    <div className={pageShellClass}>
-      <header className="flex items-center justify-between gap-4 max-sm:flex-col max-sm:items-start">
-        <h1 className="text-3xl font-semibold">财务对账</h1>
-        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'finance' | 'settings')} className="items-end">
-        <TabsList aria-label="功能切换">
-          {tabs.map((tab) => (
-            <TabsTrigger key={tab.key} value={tab.key} className="min-w-18 px-3.5">
-              {tab.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-        </Tabs>
-      </header>
+    <div className={cn(pageShellClass, hideAppHeader && !showSettings && 'gap-3 p-3 max-sm:p-3')}>
+      {!hideAppHeader || showSettings ? (
+        <header className="flex items-center justify-between gap-4">
+          <h1 className="text-3xl font-semibold">{showSettings ? '设置' : '财务对账'}</h1>
+          {showSettings ? (
+            <Button type="button" variant="ghost" size="icon" aria-label="关闭设置" onClick={() => setShowSettings(false)}>
+              <X size={20} />
+            </Button>
+          ) : (
+            <Button type="button" variant="outline" aria-label="打开设置" onClick={() => setShowSettings(true)}>
+              <Settings size={16} />设置
+            </Button>
+          )}
+        </header>
+      ) : null}
       {configError && <p className={errorTextClass}>{configError}</p>}
 
-      {activeTab === 'finance'
-        ? <FinanceCheckPage modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} modelInfo={modelInfo} onOpenSettings={() => setActiveTab('settings')} />
-        : <OcrSettings modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} ocrNodeMode={ocrNodeMode} ocrNodePath={ocrNodePath} configPath={configPath} onModelRootChange={handleModelRootChange} onVariantChange={handleVariantChange} onFinanceCheckRowConcurrencyChange={handleFinanceCheckRowConcurrencyChange} onOcrNodeModeChange={handleOcrNodeModeChange} onOcrNodePathChange={handleOcrNodePathChange} onConfigChange={handleConfigChange} onModelInfoChange={setModelInfo} />}
-      <div className={bottomRightInfoClass}>
-        <span>{formatOcrNodeModeLabel(ocrNodeMode, ocrNodeVersion)}</span>
-        {ocrNodeMode === 'custom' && ocrNodePath && (
-          <>
-            <span aria-hidden="true">·</span>
-            <span className="max-w-[min(48vw,28rem)] truncate" title={ocrNodePath}>{ocrNodePath}</span>
-          </>
-        )}
-        <span aria-hidden="true">·</span>
-        <span>{formatOcrModelVariant(variant)}</span>
-        <span aria-hidden="true">·</span>
-        <span>{formatAppVersion(appPackage.version)}</span>
-      </div>
+      {showSettings
+        ? <OcrSettings modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} ocrNodeMode={ocrNodeMode} ocrNodePath={ocrNodePath} configPath={configPath} onModelRootChange={handleModelRootChange} onVariantChange={handleVariantChange} onFinanceCheckRowConcurrencyChange={handleFinanceCheckRowConcurrencyChange} onOcrNodeModeChange={handleOcrNodeModeChange} onOcrNodePathChange={handleOcrNodePathChange} onConfigChange={handleConfigChange} onModelInfoChange={setModelInfo} />
+        : <FinanceCheckPage modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} modelInfo={modelInfo} onOpenSettings={() => setShowSettings(true)} onReconcileModeChange={setHideAppHeader} />}
+      {(!hideAppHeader || showSettings) && (
+        <div className={bottomRightInfoClass}>
+          <span>{formatOcrNodeModeLabel(ocrNodeMode, ocrNodeVersion)}</span>
+          {ocrNodeMode === 'custom' && ocrNodePath && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="max-w-[min(48vw,28rem)] truncate" title={ocrNodePath}>{ocrNodePath}</span>
+            </>
+          )}
+          <span aria-hidden="true">·</span>
+          <span>{formatOcrModelVariant(variant)}</span>
+          <span aria-hidden="true">·</span>
+          <span>{formatAppVersion(appPackage.version)}</span>
+        </div>
+      )}
     </div>
   )
 }

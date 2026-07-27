@@ -8,7 +8,12 @@ import type { Context } from 'koa'
 import type { OcrModelVariant } from '../ocr/config'
 import { recognizeImageFromPath, setDefaultOcrRuntime } from '../ocr/service'
 import { FINANCE_CHECK_ROW_CONCURRENCY, FINANCE_CHECK_TOLERANCE } from './constants'
-import { auditOutputFilename, writeAuditWorkbook } from './excel-writer'
+import {
+  auditOutputFilename,
+  writeAuditWorkbook,
+  writeWorkbookWithReviewOverrides,
+  type ReviewCellOverride,
+} from './excel-writer'
 import {
   FinanceChecker,
   FinanceCheckCancelledError,
@@ -495,9 +500,40 @@ export async function sendFinanceCheckDownload(ctx: Context, taskId: string): Pr
   const store = await readStore()
   const task = store.tasks.find((item) => item.id === taskId)
   if (!task?.resultPath || !task.resultFileName) return false
-  ctx.attachment(task.resultFileName)
+
+  const items = await readItems(taskId)
+  const overrides: ReviewCellOverride[] = items.flatMap((item) => {
+    if (
+      item.adjustedPaidAmount == null
+      && item.adjustedMerchantAmount == null
+      && item.reviewRemark == null
+    ) {
+      return []
+    }
+    return [{
+      rowNumber: item.rowNumber,
+      paidAmount: item.adjustedPaidAmount,
+      merchantAmount: item.adjustedMerchantAmount,
+      remark: item.reviewRemark,
+    }]
+  })
+
+  let filePath = task.resultPath
+  if (overrides.length > 0) {
+    const downloadPath = join(taskDir(taskId), `download-${task.resultFileName}`)
+    await writeWorkbookWithReviewOverrides(
+      task.resultPath,
+      downloadPath,
+      overrides,
+      task.sheetName ?? undefined,
+    )
+    filePath = downloadPath
+  }
+
+  const downloadFileName = auditOutputFilename(task.sourceFileName)
+  ctx.attachment(downloadFileName)
   ctx.type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-  ctx.body = createReadStream(task.resultPath)
+  ctx.body = createReadStream(filePath)
   return true
 }
 

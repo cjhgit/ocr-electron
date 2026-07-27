@@ -302,6 +302,89 @@ function appendCellXf(stylesRoot: XmlElement, fontId: number): number {
   return cellXfs.getElementsByTagNameNS(MAIN_NS, 'xf').length - 1
 }
 
+function findFontIdBySize(stylesRoot: XmlElement, size: number, fontName = '宋体'): number | null {
+  const fonts = stylesRoot.getElementsByTagNameNS(MAIN_NS, 'fonts')[0]
+  if (!fonts) return null
+  const fontNodes = nodes(fonts.getElementsByTagNameNS(MAIN_NS, 'font'))
+  for (let index = 0; index < fontNodes.length; index += 1) {
+    const font = fontNodes[index]!
+    const sz = font.getElementsByTagNameNS(MAIN_NS, 'sz')[0]?.getAttribute('val')
+    const name = font.getElementsByTagNameNS(MAIN_NS, 'name')[0]?.getAttribute('val')
+    if (sz === String(size) && (name == null || name === fontName)) return index
+  }
+  return null
+}
+
+function appendSizedFont(stylesRoot: XmlElement, size: number, fontName = '宋体'): number {
+  const fonts = stylesRoot.getElementsByTagNameNS(MAIN_NS, 'fonts')[0]!
+  const doc = stylesRoot.ownerDocument!
+  const font = doc.createElementNS(MAIN_NS, 'font')
+  font.appendChild(createAttrElement(doc, 'sz', String(size)))
+  font.appendChild(createAttrElement(doc, 'color', undefined, { theme: '1' }))
+  font.appendChild(createAttrElement(doc, 'name', fontName, { val: fontName }))
+  font.appendChild(createAttrElement(doc, 'charset', '0'))
+  fonts.appendChild(font)
+  fonts.setAttribute('count', String(fonts.getElementsByTagNameNS(MAIN_NS, 'font').length))
+  return fonts.getElementsByTagNameNS(MAIN_NS, 'font').length - 1
+}
+
+function appendCenteredCellXf(stylesRoot: XmlElement, fontId: number, baseXf: XmlElement | null): number {
+  const cellXfs = stylesRoot.getElementsByTagNameNS(MAIN_NS, 'cellXfs')[0]!
+  const doc = stylesRoot.ownerDocument!
+  const xf = doc.createElementNS(MAIN_NS, 'xf')
+  xf.setAttribute('numFmtId', baseXf?.getAttribute('numFmtId') ?? '0')
+  xf.setAttribute('fontId', String(fontId))
+  xf.setAttribute('fillId', baseXf?.getAttribute('fillId') ?? '0')
+  xf.setAttribute('borderId', baseXf?.getAttribute('borderId') ?? '0')
+  xf.setAttribute('xfId', baseXf?.getAttribute('xfId') ?? '0')
+  xf.setAttribute('applyFont', '1')
+  xf.setAttribute('applyAlignment', '1')
+  const alignment = doc.createElementNS(MAIN_NS, 'alignment')
+  alignment.setAttribute('horizontal', 'center')
+  const baseAlignment = baseXf?.getElementsByTagNameNS(MAIN_NS, 'alignment')[0]
+  if (baseAlignment?.getAttribute('vertical')) {
+    alignment.setAttribute('vertical', baseAlignment.getAttribute('vertical')!)
+  }
+  if (baseAlignment?.getAttribute('wrapText')) {
+    alignment.setAttribute('wrapText', baseAlignment.getAttribute('wrapText')!)
+  }
+  xf.appendChild(alignment)
+  cellXfs.appendChild(xf)
+  cellXfs.setAttribute('count', String(cellXfs.getElementsByTagNameNS(MAIN_NS, 'xf').length))
+  return cellXfs.getElementsByTagNameNS(MAIN_NS, 'xf').length - 1
+}
+
+function getCellStyleIndex(row: XmlElement, ref: string): number | null {
+  for (const cell of nodes(row.getElementsByTagNameNS(MAIN_NS, 'c'))) {
+    if (cell.getAttribute('r') !== ref) continue
+    const style = cell.getAttribute('s')
+    return style != null ? Number(style) : null
+  }
+  return null
+}
+
+function getCellXf(stylesRoot: XmlElement, styleIndex: number | null): XmlElement | null {
+  if (styleIndex == null || !Number.isFinite(styleIndex)) return null
+  const cellXfs = stylesRoot.getElementsByTagNameNS(MAIN_NS, 'cellXfs')[0]
+  if (!cellXfs) return null
+  return nodes(cellXfs.getElementsByTagNameNS(MAIN_NS, 'xf'))[styleIndex] ?? null
+}
+
+function ensureReviewOverrideStyle(
+  stylesRoot: XmlElement,
+  baseStyleIndex: number | null,
+  cache: Map<number | null, number>,
+): number {
+  if (cache.has(baseStyleIndex)) return cache.get(baseStyleIndex)!
+
+  let fontId = findFontIdBySize(stylesRoot, 14)
+  if (fontId == null) fontId = appendSizedFont(stylesRoot, 14)
+
+  const styleIndex = appendCenteredCellXf(stylesRoot, fontId, getCellXf(stylesRoot, baseStyleIndex))
+  cache.set(baseStyleIndex, styleIndex)
+  return styleIndex
+}
+
 function ensureAuditStyles(stylesRoot: XmlElement): [number, number] {
   let greenFontId = findFontId(stylesRoot, ['FF008000', 'FF006100'])
   let redFontId = findFontId(stylesRoot, ['FFFF0000', 'FF9C0006'])
@@ -395,6 +478,114 @@ export async function writeAuditWorkbook(
   }
 
   patchWorkbookEntries(entries, result, sheetName)
+
+  const outputZip = new AdmZip()
+  for (const name of itemNames) {
+    outputZip.addFile(name, entries.get(name)!)
+  }
+  outputZip.writeZip(outputPath)
+  return outputPath
+}
+
+export type ReviewCellOverride = {
+  rowNumber: number
+  paidAmount?: string | null
+  merchantAmount?: string | null
+  remark?: string | null
+}
+
+const REVIEW_OVERRIDE_COLUMNS = {
+  paidAmount: ['推单实付金额'],
+  merchantAmount: ['商家实收', '商家实收金额'],
+  remark: ['备注'],
+} as const
+
+function findHeaderCol(headers: Map<string, string>, aliases: readonly string[]): string | undefined {
+  for (const alias of aliases) {
+    const col = headers.get(normalizeHeaderForWriter(alias))
+    if (col) return col
+  }
+  return undefined
+}
+
+function patchReviewOverrides(
+  entries: Map<string, Buffer>,
+  overrides: ReviewCellOverride[],
+  sheetName?: string,
+): void {
+  if (overrides.length === 0) return
+
+  const stylesDoc = new DOMParser().parseFromString(
+    entries.get('xl/styles.xml')!.toString('utf8'),
+    'application/xml',
+  )
+  const stylesRoot = stylesDoc.documentElement
+  if (!stylesRoot) throw new Error('styles.xml 缺少根节点')
+  const styleCache = new Map<number | null, number>()
+
+  const sheetPath = resolveSheetPath(entries, sheetName)
+  const sharedStrings = loadSharedStrings(entries.get('xl/sharedStrings.xml'))
+  const sheetDoc = new DOMParser().parseFromString(
+    entries.get(sheetPath)!.toString('utf8'),
+    'application/xml',
+  )
+  const sheetData = sheetDoc.getElementsByTagNameNS(MAIN_NS, 'sheetData')[0]
+  if (!sheetData) throw new Error('表格缺少 sheetData')
+
+  const headers = headerMap(sheetData, sharedStrings)
+  const paidCol = findHeaderCol(headers, REVIEW_OVERRIDE_COLUMNS.paidAmount)
+  const merchantCol = findHeaderCol(headers, REVIEW_OVERRIDE_COLUMNS.merchantAmount)
+  const remarkCol = findHeaderCol(headers, REVIEW_OVERRIDE_COLUMNS.remark)
+
+  function writeOverrideCell(
+    row: XmlElement,
+    colLetters: string,
+    rowNumber: number,
+    value: string,
+  ): void {
+    const ref = `${colLetters}${rowNumber}`
+    const baseStyle = getCellStyleIndex(row, ref)
+    const styleIndex = ensureReviewOverrideStyle(stylesRoot, baseStyle, styleCache)
+    setRowCell(row, colLetters, rowNumber, makeInlineCell(ref, value, styleIndex))
+  }
+
+  for (const override of overrides) {
+    const dataRow = getOrCreateRow(sheetData, override.rowNumber)
+    if (override.paidAmount != null && paidCol) {
+      writeOverrideCell(dataRow, paidCol, override.rowNumber, override.paidAmount)
+    }
+    if (override.merchantAmount != null && merchantCol) {
+      writeOverrideCell(dataRow, merchantCol, override.rowNumber, override.merchantAmount)
+    }
+    if (override.remark != null && remarkCol) {
+      writeOverrideCell(dataRow, remarkCol, override.rowNumber, override.remark)
+    }
+  }
+
+  entries.set('xl/styles.xml', serializeXml(stylesDoc))
+  entries.set(sheetPath, serializeXml(sheetDoc))
+}
+
+export async function writeWorkbookWithReviewOverrides(
+  sourcePath: string,
+  outputPath: string,
+  overrides: ReviewCellOverride[],
+  sheetName?: string,
+): Promise<string> {
+  await mkdir(dirname(outputPath), { recursive: true })
+  await copyFile(sourcePath, outputPath)
+
+  if (overrides.length === 0) return outputPath
+
+  const zip = new AdmZip(outputPath)
+  const entries = new Map<string, Buffer>()
+  const itemNames: string[] = []
+  for (const entry of zip.getEntries()) {
+    itemNames.push(entry.entryName)
+    entries.set(entry.entryName, entry.getData())
+  }
+
+  patchReviewOverrides(entries, overrides, sheetName)
 
   const outputZip = new AdmZip()
   for (const name of itemNames) {

@@ -217,6 +217,10 @@ function formatOcrModelVariant(variant: OcrModelVariant | null): string {
   return variant ? OCR_MODEL_LABEL[variant] : '-'
 }
 
+function formatOcrTaskConfig(task: FinanceCheckTask): string {
+  return `${formatOcrModelVariant(task.modelVariant)} · ${task.ocrWorkerCount} 线程`
+}
+
 function formatOcrNodeModeLabel(mode: OcrNodeMode, nodeVersion: string | null = null): string {
   if (mode === 'custom') return '自定义 Node.js'
   return nodeVersion ? `内置 Node.js v${nodeVersion}` : '内置 Node.js'
@@ -1643,7 +1647,7 @@ function FinanceCheckPage({
                 <TableHead>错误信息</TableHead>
                 <TableHead>进度 / 汇总</TableHead>
                 <TableHead>耗时</TableHead>
-                <TableHead>模型</TableHead>
+                <TableHead>配置</TableHead>
                 <TableHead>创建时间</TableHead>
                 <TableHead>操作</TableHead>
               </TableRow>
@@ -1672,7 +1676,7 @@ function FinanceCheckPage({
                   <TableCell className="w-55 max-w-55"><ErrorMessageCell message={task.errorMessage} /></TableCell>
                   <TableCell><TaskProgress task={task} cancelling={isCancelling} />{task.taskStatus === 'succeeded' && <SummaryText task={task} />}</TableCell>
                   <TableCell>{formatTaskDuration(task, nowMs)}</TableCell>
-                  <TableCell>{formatOcrModelVariant(task.modelVariant)}</TableCell>
+                  <TableCell>{formatOcrTaskConfig(task)}</TableCell>
                   <TableCell>{formatTime(task.createdAt)}</TableCell>
                   <TableCell>
                     <div className={rowActionsClass}>
@@ -2264,7 +2268,7 @@ function FinanceCheckDetail({
             <Info label="创建时间" value={formatTime(task.createdAt)} />
             <Info label="完成时间" value={formatTime(task.finishedAt)} />
             <Info label="耗时" value={formatTaskDuration(task, nowMs)} />
-            <Info label="OCR 进程数" value={String(task.ocrWorkerCount)} />
+            <Info label="OCR 线程数" value={String(task.ocrWorkerCount)} />
             <Info label="对账汇总" value={task.summary ? formatCheckSummary(task.summary) : '-'} />
           </div>
         )}

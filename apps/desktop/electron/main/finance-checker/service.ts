@@ -103,6 +103,8 @@ const FILES_DIR = join(DATA_DIR, 'files')
 const PROGRESS_FLUSH_INTERVAL_MS = 1000
 
 let processing = false
+let deleting = Promise.resolve()
+const forceDeletedTaskIds = new Set<string>()
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -255,12 +257,17 @@ async function runTask(task: StoredTask): Promise<void> {
     const taskItems: FinanceCheckTaskItem[] = []
     let lastFlushAt = 0
     let flushQueue = Promise.resolve()
+    function ensureTaskNotForceDeleted(): void {
+      if (forceDeletedTaskIds.has(task.id)) throw new FinanceCheckCancelledError()
+    }
 
     async function flushProgress(processedRows: number, totalRows: number): Promise<void> {
+      ensureTaskNotForceDeleted()
       const currentTime = Date.now()
       if (processedRows < totalRows && currentTime - lastFlushAt < PROGRESS_FLUSH_INTERVAL_MS) return
       lastFlushAt = currentTime
       flushQueue = flushQueue.then(async () => {
+        ensureTaskNotForceDeleted()
         taskItems.sort((a, b) => a.rowNumber - b.rowNumber)
         await writeItems(task.id, taskItems)
         await updateTask(task.id, (current) => {
@@ -276,15 +283,19 @@ async function runTask(task: StoredTask): Promise<void> {
       cacheDir: join(taskDir(task.id), '.cache'),
       concurrency: task.rowConcurrency ?? FINANCE_CHECK_ROW_CONCURRENCY,
       shouldCancel: async () => {
+        if (forceDeletedTaskIds.has(task.id)) return true
         const store = await readStore()
-        return store.tasks.find((item) => item.id === task.id)?.cancelledRequested === true
+        const current = store.tasks.find((item) => item.id === task.id)
+        return !current || current.cancelledRequested === true
       },
       onRowProcessed: async (processedRows, totalRows, rowResult) => {
+        ensureTaskNotForceDeleted()
         upsertItem(taskItems, itemFromRowResult(task.id, rowResult))
         await flushProgress(processedRows, totalRows)
       },
     })
 
+    ensureTaskNotForceDeleted()
     await flushQueue
     const finalItems = result.rows.map((rowResult) => itemFromRowResult(task.id, rowResult))
     finalItems.sort((a, b) => a.rowNumber - b.rowNumber)
@@ -316,6 +327,10 @@ async function runTask(task: StoredTask): Promise<void> {
       console.warn(`[finance-check] 任务取消: taskId=${task.id}`)
     } else {
       console.error(`[finance-check] 任务失败: taskId=${task.id}`, error)
+    }
+    if (forceDeletedTaskIds.has(task.id)) {
+      forceDeletedTaskIds.delete(task.id)
+      return
     }
     await updateTask(task.id, (current) => {
       current.taskStatus = isCancelled ? 'cancelled' : 'failed'
@@ -487,13 +502,18 @@ export async function setFinanceCheckTaskArchived(taskId: string, archived: bool
 }
 
 export async function deleteFinanceCheckTask(taskId: string): Promise<boolean> {
-  const store = await readStore()
-  const task = store.tasks.find((item) => item.id === taskId)
-  if (!task || task.taskStatus === 'running') return false
-  store.tasks = store.tasks.filter((item) => item.id !== taskId)
-  await writeStore(store)
-  await rm(taskDir(taskId), { recursive: true, force: true })
-  return true
+  const result = deleting.then(async () => {
+    const store = await readStore()
+    const task = store.tasks.find((item) => item.id === taskId)
+    if (!task) return false
+    if (task.taskStatus === 'pending' || task.taskStatus === 'running') forceDeletedTaskIds.add(taskId)
+    store.tasks = store.tasks.filter((item) => item.id !== taskId)
+    await writeStore(store)
+    await rm(taskDir(taskId), { recursive: true, force: true })
+    return true
+  })
+  deleting = result.then(() => undefined, () => undefined)
+  return result
 }
 
 export async function sendFinanceCheckDownload(ctx: Context, taskId: string): Promise<boolean> {

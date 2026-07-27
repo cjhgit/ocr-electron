@@ -1236,6 +1236,7 @@ function FinanceCheckPage({
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [batchArchiving, setBatchArchiving] = useState(false)
+  const [batchDeleting, setBatchDeleting] = useState(false)
   const [cancellingTaskIds, setCancellingTaskIds] = useState<Set<string>>(() => new Set())
   const [nowMs, setNowMs] = useState(() => Date.now())
   const dragCountRef = useRef(0)
@@ -1244,11 +1245,11 @@ function FinanceCheckPage({
     !modelRoot.trim() || (variant === 'v5_server' && modelInfo?.modelRoot === modelRoot.trim() && !modelInfo.ready)
 
   function canSelectTask(task: FinanceCheckTask) {
-    return task.taskStatus !== 'pending' && task.taskStatus !== 'running'
+    return Boolean(task.id)
   }
 
   function canArchiveTask(task: FinanceCheckTask) {
-    return canSelectTask(task) && !task.archived
+    return task.taskStatus !== 'pending' && task.taskStatus !== 'running' && !task.archived
   }
 
   async function refresh() {
@@ -1265,7 +1266,7 @@ function FinanceCheckPage({
       setTotal(data.total)
       setSelectedIds((prev) => {
         if (prev.size === 0) return prev
-        const nextIds = new Set(data.items.filter((task) => prev.has(task.id) && canSelectTask(task)).map((task) => task.id))
+        const nextIds = new Set(data.items.filter((task) => prev.has(task.id)).map((task) => task.id))
         return nextIds.size === prev.size && [...nextIds].every((id) => prev.has(id)) ? prev : nextIds
       })
       setCancellingTaskIds((prev) => {
@@ -1384,10 +1385,66 @@ function FinanceCheckPage({
     }
   }
 
+  async function handleDeleteTask(task: FinanceCheckTask, afterDelete?: () => void) {
+    const isActive = task.taskStatus === 'pending' || task.taskStatus === 'running'
+    const message = isActive
+      ? `确定强制删除正在执行的任务「${task.sourceFileName}」吗？`
+      : `确定删除「${task.sourceFileName}」吗？`
+    if (!window.confirm(message)) return
+    setError('')
+    try {
+      await deleteFinanceCheckTask(task.id)
+      setSelectedIds((prev) => {
+        if (!prev.has(task.id)) return prev
+        const next = new Set(prev)
+        next.delete(task.id)
+        return next
+      })
+      afterDelete?.()
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除任务失败')
+    }
+  }
+
+  async function handleBatchDelete() {
+    const selectedTasks = tasks.filter((task) => selectedIds.has(task.id))
+    const targets = [...selectedTasks]
+    if (targets.length === 0) return
+    const activeCount = targets.filter((task) => task.taskStatus === 'pending' || task.taskStatus === 'running').length
+    const previewNames = targets.slice(0, 5).map((task) => `- ${task.sourceFileName}`).join('\n')
+    const moreText = targets.length > 5 ? `\n...另有 ${targets.length - 5} 条` : ''
+    const message = activeCount > 0
+      ? `确定强制删除选中的 ${targets.length} 条任务吗？其中 ${activeCount} 条正在执行。\n\n${previewNames}${moreText}`
+      : `确定删除选中的 ${targets.length} 条任务吗？\n\n${previewNames}${moreText}`
+    if (!window.confirm(message)) return
+    setBatchDeleting(true)
+    setError('')
+    try {
+      let failed = 0
+      for (const task of targets) {
+        try {
+          await deleteFinanceCheckTask(task.id)
+        } catch {
+          failed += 1
+        }
+      }
+      setSelectedIds(new Set())
+      await refresh()
+      if (failed > 0) {
+        setError(`有 ${failed} 条任务删除失败`)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '批量删除失败')
+    } finally {
+      setBatchDeleting(false)
+    }
+  }
+
   function toggleTaskSelected(taskId: string, checked: boolean) {
     setSelectedIds((prev) => {
       const next = new Set(prev)
-      if (checked) next.add(taskId)
+      if (checked === true) next.add(taskId)
       else next.delete(taskId)
       return next
     })
@@ -1398,7 +1455,7 @@ function FinanceCheckPage({
       const next = new Set(prev)
       for (const task of tasks) {
         if (!canSelectTask(task)) continue
-        if (checked) next.add(task.id)
+        if (checked === true) next.add(task.id)
         else next.delete(task.id)
       }
       return next
@@ -1543,13 +1600,24 @@ function FinanceCheckPage({
             <Button
               type="button"
               size="sm"
-              disabled={batchArchiving || batchArchiveTargets.length === 0}
+              disabled={batchArchiving || batchDeleting || batchArchiveTargets.length === 0}
               onClick={() => void handleBatchArchive()}
             >
               <Archive size={14} />
               {batchArchiving ? '归档中...' : `归档${batchArchiveTargets.length > 0 ? ` (${batchArchiveTargets.length})` : ''}`}
             </Button>
-            <Button type="button" size="sm" variant="ghost" disabled={batchArchiving} onClick={() => setSelectedIds(new Set())}>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className={dangerClass}
+              disabled={batchArchiving || batchDeleting}
+              onClick={() => void handleBatchDelete()}
+            >
+              <Trash2 size={14} />
+              {batchDeleting ? '删除中...' : `删除 (${selectedCount})`}
+            </Button>
+            <Button type="button" size="sm" variant="ghost" disabled={batchArchiving || batchDeleting} onClick={() => setSelectedIds(new Set())}>
               取消选择
             </Button>
           </div>
@@ -1606,21 +1674,17 @@ function FinanceCheckPage({
                   <TableCell>
                     <div className={rowActionsClass}>
                       {(task.taskStatus === 'pending' || task.taskStatus === 'running') && !isCancelling
-                        ? (
+                        && (
                             <Button type="button" variant="ghost" size="sm" className={dangerClass} onClick={() => void handleCancelTask(task.id)}>
                               <XCircle size={14} />取消
                             </Button>
-                          )
-                        : (task.taskStatus !== 'pending' && task.taskStatus !== 'running')
-                          ? (
-                              <>
-                                <Button type="button" variant="ghost" size="sm" onClick={() => void handleToggleArchive(task)}>
-                                  {task.archived ? <><ArchiveRestore size={14} />取消归档</> : <><Archive size={14} />归档</>}
-                                </Button>
-                                <Button type="button" variant="ghost" size="sm" className={dangerClass} onClick={async () => { if (window.confirm(`确定删除「${task.sourceFileName}」吗？`)) { await deleteFinanceCheckTask(task.id); await refresh() } }}><Trash2 size={14} />删除</Button>
-                              </>
-                            )
-                          : null}
+                          )}
+                      {task.taskStatus !== 'pending' && task.taskStatus !== 'running' && (
+                        <Button type="button" variant="ghost" size="sm" onClick={() => void handleToggleArchive(task)}>
+                          {task.archived ? <><ArchiveRestore size={14} />取消归档</> : <><Archive size={14} />归档</>}
+                        </Button>
+                      )}
+                      <Button type="button" variant="ghost" size="sm" className={dangerClass} onClick={() => void handleDeleteTask(task)}><Trash2 size={14} />删除</Button>
                     </div>
                   </TableCell>
                 </TableRow>
@@ -2159,7 +2223,29 @@ function FinanceCheckDetail({
                 {task.archived ? <><ArchiveRestore size={16} />取消归档</> : <><Archive size={16} />归档</>}
               </Button>
             )}
-            {task && task.taskStatus !== 'pending' && task.taskStatus !== 'running' && <Button type="button" variant="outline" className={dangerClass} onClick={async () => { if (window.confirm(`确定删除「${task.sourceFileName}」吗？`)) { await deleteFinanceCheckTask(taskId); onBack() } }}><Trash2 size={16} />删除任务</Button>}
+            {task && (
+              <Button
+                type="button"
+                variant="outline"
+                className={dangerClass}
+                onClick={async () => {
+                  const isActive = task.taskStatus === 'pending' || task.taskStatus === 'running'
+                  const message = isActive
+                    ? `确定强制删除正在执行的任务「${task.sourceFileName}」吗？`
+                    : `确定删除「${task.sourceFileName}」吗？`
+                  if (!window.confirm(message)) return
+                  setError('')
+                  try {
+                    await deleteFinanceCheckTask(taskId)
+                    onBack()
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : '删除任务失败')
+                  }
+                }}
+              >
+                <Trash2 size={16} />删除任务
+              </Button>
+            )}
             <Button type="button" variant="outline" onClick={() => void refresh()}><RefreshCw size={16} />刷新</Button>
           </div>
           </CardAction>

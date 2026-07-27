@@ -183,6 +183,7 @@ const fieldClass = 'flex flex-col gap-1.5 text-sm [&>span]:text-muted-foreground
 const mutedClass = 'text-sm text-muted-foreground'
 const errorTextClass = 'text-sm text-destructive'
 const tableWrapClass = 'overflow-hidden rounded-lg border [&_[data-slot=table-container]]:max-h-[calc(100vh-320px)] [&_[data-slot=table-head]]:bg-muted [&_[data-slot=table-head]]:text-xs [&_[data-slot=table-head]]:text-muted-foreground [&_[data-slot=table]]:text-xs'
+const stickyTableWrapClass = cn(tableWrapClass, '[&_[data-slot=table-container]]:overflow-auto [&_[data-slot=table-head]]:sticky [&_[data-slot=table-head]]:top-0 [&_[data-slot=table-head]]:z-10')
 const emptyCellClass = 'h-24 text-center text-muted-foreground'
 const dangerClass = 'text-destructive hover:text-destructive'
 const detailValueClass = 'text-sm font-medium text-foreground'
@@ -2284,7 +2285,7 @@ function FinanceCheckDetail({
           </CardAction>
         </CardHeader>
         <CardContent className={cardStackClass}>
-        <div className={tableWrapClass}>
+        <div className={stickyTableWrapClass}>
           <Table>
             <TableHeader>
               <TableRow>

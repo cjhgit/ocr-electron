@@ -1,6 +1,6 @@
 const VOUCHER_CODE_RE = /(?<!\d)(0\d{11})(?!\d)/g
 const ORDER_CODE_RE = /(?<!\d)(80\d{9})(?!\d)/g
-export const MERCHANT_ORDER_RE = /(?<!\d)(80\d{9}|0\d{11}|[23]\d{10})(?!\d)/g
+export const MERCHANT_ORDER_RE = /(?<!\d)(80\d{9}|0\d{11}|[123]\d{10})(?!\d)/g
 const DECIMAL_AMOUNT_RE = /(?<!\d)(\d+\.\d{2})(?!\d)/g
 const BRACKET_AMOUNT_RE = /\[(\d+(?:\.\d+)?)[^\]]*元\]/g
 

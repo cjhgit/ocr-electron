@@ -27,7 +27,7 @@ export type FinanceCheckTask = {
   sheetName: string | null
   modelVariant: OcrModelVariant | null
   tolerance: number
-  rowConcurrency: number
+  ocrWorkerCount: number
   summary: FinanceCheckSummary | null
   totalRows: number | null
   processedRows: number | null
@@ -97,13 +97,13 @@ export async function uploadFinanceCheckTask(payload: {
   file: File
   modelRoot: string
   variant: OcrModelVariant
-  rowConcurrency: number
+  ocrWorkerCount: number
 }) {
   const formData = new FormData()
   formData.set('file', payload.file, payload.file.name)
   formData.set('modelRoot', payload.modelRoot)
   formData.set('variant', payload.variant)
-  formData.set('rowConcurrency', String(payload.rowConcurrency))
+  formData.set('ocrWorkerCount', String(payload.ocrWorkerCount))
 
   return request<{ taskId: string; taskStatus: FinanceCheckTaskStatus }>(
     '/api/finance-check/tasks',

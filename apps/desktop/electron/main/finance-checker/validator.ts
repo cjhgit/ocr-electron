@@ -6,7 +6,7 @@ import {
   parseMerchantScreenshot,
   parsePaymentScreenshot,
 } from './ocr-parser'
-import { FINANCE_CHECK_AMOUNT_TOLERANCE, FINANCE_CHECK_ROW_CONCURRENCY } from './constants'
+import { FINANCE_CHECK_AMOUNT_TOLERANCE, FINANCE_CHECK_OCR_WORKER_COUNT } from './constants'
 import {
   parseStructuredScreenshot,
   type StructuredScreenshot,
@@ -139,7 +139,7 @@ export class FinanceChecker {
     const imageIdMap = loadImageIdMap(xlsxPath)
     const imageExtractor = new WorkbookImageExtractor(xlsxPath, imageCacheDir)
     const duplicateFirstRowByRow = buildDuplicateFirstRowMap(rows)
-    const concurrency = options.concurrency ?? FINANCE_CHECK_ROW_CONCURRENCY
+    const concurrency = options.concurrency ?? FINANCE_CHECK_OCR_WORKER_COUNT
     const rowResults: RowCheckResult[] = []
     const pendingChecks: Array<{ rowIndex: number; row: RowRecord }> = []
     let dataRowCount = 0

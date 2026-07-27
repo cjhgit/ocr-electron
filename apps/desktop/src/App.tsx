@@ -807,13 +807,13 @@ function JsonModal({
 function OcrSettings({
   modelRoot,
   variant,
-  financeCheckRowConcurrency,
+  ocrWorkerCount,
   ocrNodeMode,
   ocrNodePath,
   configPath,
   onModelRootChange,
   onVariantChange,
-  onFinanceCheckRowConcurrencyChange,
+  onOcrWorkerCountChange,
   onOcrNodeModeChange,
   onOcrNodePathChange,
   onConfigChange,
@@ -821,16 +821,16 @@ function OcrSettings({
 }: {
   modelRoot: string
   variant: OcrModelVariant
-  financeCheckRowConcurrency: number
+  ocrWorkerCount: number
   ocrNodeMode: OcrNodeMode
   ocrNodePath: string
   configPath: string
   onModelRootChange: (value: string) => void
   onVariantChange: (value: OcrModelVariant) => void
-  onFinanceCheckRowConcurrencyChange: (value: number) => void
+  onOcrWorkerCountChange: (value: number) => void
   onOcrNodeModeChange: (value: OcrNodeMode) => void
   onOcrNodePathChange: (value: string) => void
-  onConfigChange: (modelRoot: string, variant: OcrModelVariant, financeCheckRowConcurrency: number) => void
+  onConfigChange: (modelRoot: string, variant: OcrModelVariant, ocrWorkerCount: number) => void
   onModelInfoChange: (value: OcrServerModelInfo) => void
 }) {
   const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTab>('model')
@@ -891,7 +891,7 @@ function OcrSettings({
       const info = await downloadServerModel(variant)
       setModelInfo(info)
       onModelInfoChange(info)
-      onConfigChange(info.modelRoot, variant, financeCheckRowConcurrency)
+      onConfigChange(info.modelRoot, variant, ocrWorkerCount)
     } catch (err) {
       setError(err instanceof Error ? err.message : '下载模型失败')
     } finally {
@@ -1030,15 +1030,15 @@ function OcrSettings({
               <span className="text-xs leading-relaxed text-muted-foreground">{selectedModelOption.description}</span>
             </div>
             <label className={fieldClass}>
-              <span>对账行并发数</span>
+              <span>并发数</span>
               <Input
                 type="number"
                 min={1}
-                max={20}
                 step={1}
-                value={financeCheckRowConcurrency}
-                onChange={(event) => onFinanceCheckRowConcurrencyChange(Number(event.target.value))}
+                value={ocrWorkerCount}
+                onChange={(event) => onOcrWorkerCountChange(Number(event.target.value))}
               />
+              <span className="text-xs leading-relaxed text-muted-foreground">每个并发会启动一个 OCR 子进程并加载一份模型；数值越大通常越快，也会占用更多内存。</span>
             </label>
             {modelInfo && (
               <div className="grid gap-2 rounded-lg border bg-muted p-3">
@@ -1214,14 +1214,14 @@ function OcrSettings({
 function FinanceCheckPage({
   modelRoot,
   variant,
-  financeCheckRowConcurrency,
+  ocrWorkerCount,
   modelInfo,
   onOpenSettings,
   onReconcileModeChange,
 }: {
   modelRoot: string
   variant: OcrModelVariant
-  financeCheckRowConcurrency: number
+  ocrWorkerCount: number
   modelInfo: OcrServerModelInfo | null
   onOpenSettings: () => void
   onReconcileModeChange?: (active: boolean) => void
@@ -1326,7 +1326,7 @@ function FinanceCheckPage({
         file,
         modelRoot: modelRoot.trim(),
         variant,
-        rowConcurrency: financeCheckRowConcurrency,
+        ocrWorkerCount,
       })
       setPage(1)
       await refresh()
@@ -2264,7 +2264,7 @@ function FinanceCheckDetail({
             <Info label="创建时间" value={formatTime(task.createdAt)} />
             <Info label="完成时间" value={formatTime(task.finishedAt)} />
             <Info label="耗时" value={formatTaskDuration(task, nowMs)} />
-            <Info label="行并发数" value={String(task.rowConcurrency)} />
+            <Info label="OCR 进程数" value={String(task.ocrWorkerCount)} />
             <Info label="对账汇总" value={task.summary ? formatCheckSummary(task.summary) : '-'} />
           </div>
         )}
@@ -2427,7 +2427,7 @@ function App() {
   const [hideAppHeader, setHideAppHeader] = useState(false)
   const [modelRoot, setModelRoot] = useState('')
   const [variant, setVariant] = useState<OcrModelVariant>('v5_server')
-  const [financeCheckRowConcurrency, setFinanceCheckRowConcurrency] = useState(5)
+  const [ocrWorkerCount, setOcrWorkerCount] = useState(2)
   const [ocrNodeMode, setOcrNodeMode] = useState<OcrNodeMode>('builtin')
   const [ocrNodePath, setOcrNodePath] = useState('')
   const [ocrNodeVersion, setOcrNodeVersion] = useState<string | null>(null)
@@ -2442,7 +2442,7 @@ function App() {
         const info = await fetchServerModelInfo(config.variant)
         setModelRoot(config.modelRoot)
         setVariant(config.variant)
-        setFinanceCheckRowConcurrency(config.financeCheckRowConcurrency)
+        setOcrWorkerCount(config.ocrWorkerCount)
         setOcrNodeMode(config.ocrNodeMode)
         setOcrNodePath(config.ocrNodePath)
         setOcrNodeVersion(config.ocrNodeInfo.nodeVersion)
@@ -2456,15 +2456,15 @@ function App() {
     void loadConfig()
   }, [])
 
-  function normalizeFinanceCheckRowConcurrency(value: number): number {
-    if (!Number.isFinite(value)) return 5
-    return Math.max(1, Math.min(20, Math.round(value)))
+  function normalizeOcrWorkerCount(value: number): number {
+    if (!Number.isFinite(value)) return 2
+    return Math.max(1, Math.round(value))
   }
 
   async function persistConfig(
     nextModelRoot: string,
     nextVariant: OcrModelVariant,
-    nextFinanceCheckRowConcurrency: number,
+    nextOcrWorkerCount: number,
     nextOcrNodeMode: OcrNodeMode = ocrNodeMode,
     nextOcrNodePath: string = ocrNodePath,
   ) {
@@ -2472,7 +2472,7 @@ function App() {
       const config = await saveAppConfig({
         modelRoot: nextModelRoot,
         variant: nextVariant,
-        financeCheckRowConcurrency: nextFinanceCheckRowConcurrency,
+        ocrWorkerCount: nextOcrWorkerCount,
         ocrNodeMode: nextOcrNodeMode,
         ocrNodePath: nextOcrNodePath,
       })
@@ -2486,35 +2486,35 @@ function App() {
 
   function handleModelRootChange(value: string) {
     setModelRoot(value)
-    void persistConfig(value, variant, financeCheckRowConcurrency)
+    void persistConfig(value, variant, ocrWorkerCount)
   }
 
   function handleVariantChange(value: OcrModelVariant) {
     setVariant(value)
-    void persistConfig(modelRoot, value, financeCheckRowConcurrency)
+    void persistConfig(modelRoot, value, ocrWorkerCount)
   }
 
-  function handleFinanceCheckRowConcurrencyChange(value: number) {
-    const normalized = normalizeFinanceCheckRowConcurrency(value)
-    setFinanceCheckRowConcurrency(normalized)
+  function handleOcrWorkerCountChange(value: number) {
+    const normalized = normalizeOcrWorkerCount(value)
+    setOcrWorkerCount(normalized)
     void persistConfig(modelRoot, variant, normalized)
   }
 
   function handleOcrNodeModeChange(value: OcrNodeMode) {
     setOcrNodeMode(value)
-    void persistConfig(modelRoot, variant, financeCheckRowConcurrency, value, ocrNodePath)
+    void persistConfig(modelRoot, variant, ocrWorkerCount, value, ocrNodePath)
   }
 
   function handleOcrNodePathChange(value: string) {
     setOcrNodePath(value)
-    void persistConfig(modelRoot, variant, financeCheckRowConcurrency, ocrNodeMode, value)
+    void persistConfig(modelRoot, variant, ocrWorkerCount, ocrNodeMode, value)
   }
 
-  function handleConfigChange(nextModelRoot: string, nextVariant: OcrModelVariant, nextFinanceCheckRowConcurrency: number) {
-    const normalized = normalizeFinanceCheckRowConcurrency(nextFinanceCheckRowConcurrency)
+  function handleConfigChange(nextModelRoot: string, nextVariant: OcrModelVariant, nextOcrWorkerCount: number) {
+    const normalized = normalizeOcrWorkerCount(nextOcrWorkerCount)
     setModelRoot(nextModelRoot)
     setVariant(nextVariant)
-    setFinanceCheckRowConcurrency(normalized)
+    setOcrWorkerCount(normalized)
     void persistConfig(nextModelRoot, nextVariant, normalized)
   }
 
@@ -2537,8 +2537,8 @@ function App() {
       {configError && <p className={errorTextClass}>{configError}</p>}
 
       {showSettings
-        ? <OcrSettings modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} ocrNodeMode={ocrNodeMode} ocrNodePath={ocrNodePath} configPath={configPath} onModelRootChange={handleModelRootChange} onVariantChange={handleVariantChange} onFinanceCheckRowConcurrencyChange={handleFinanceCheckRowConcurrencyChange} onOcrNodeModeChange={handleOcrNodeModeChange} onOcrNodePathChange={handleOcrNodePathChange} onConfigChange={handleConfigChange} onModelInfoChange={setModelInfo} />
-        : <FinanceCheckPage modelRoot={modelRoot} variant={variant} financeCheckRowConcurrency={financeCheckRowConcurrency} modelInfo={modelInfo} onOpenSettings={() => setShowSettings(true)} onReconcileModeChange={setHideAppHeader} />}
+        ? <OcrSettings modelRoot={modelRoot} variant={variant} ocrWorkerCount={ocrWorkerCount} ocrNodeMode={ocrNodeMode} ocrNodePath={ocrNodePath} configPath={configPath} onModelRootChange={handleModelRootChange} onVariantChange={handleVariantChange} onOcrWorkerCountChange={handleOcrWorkerCountChange} onOcrNodeModeChange={handleOcrNodeModeChange} onOcrNodePathChange={handleOcrNodePathChange} onConfigChange={handleConfigChange} onModelInfoChange={setModelInfo} />
+        : <FinanceCheckPage modelRoot={modelRoot} variant={variant} ocrWorkerCount={ocrWorkerCount} modelInfo={modelInfo} onOpenSettings={() => setShowSettings(true)} onReconcileModeChange={setHideAppHeader} />}
       {(!hideAppHeader || showSettings) && (
         <div className={bottomRightInfoClass}>
           <span>{formatOcrNodeModeLabel(ocrNodeMode, ocrNodeVersion)}</span>

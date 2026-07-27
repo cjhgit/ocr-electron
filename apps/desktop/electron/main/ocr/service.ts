@@ -80,7 +80,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
 const OCR_REQUEST_TIMEOUT_MS = 5 * 60_000
 const OCR_WORKER_RETRY_LIMIT = 2
-const OCR_WORKER_POOL_MAX = 4
 
 let defaultRuntime: OcrRuntimeOptions | null = null
 let nodeConfig: OcrNodeConfig = {
@@ -118,10 +117,10 @@ const queuedRequestIds: number[] = []
 function defaultOcrWorkerCount(): number {
   const envValue = Number(process.env.OCR_WORKER_COUNT)
   if (Number.isFinite(envValue) && envValue > 0) {
-    return Math.max(1, Math.min(OCR_WORKER_POOL_MAX, Math.round(envValue)))
+    return Math.max(1, Math.round(envValue))
   }
   const usableCores = Math.max(1, availableParallelism() - 1)
-  return Math.max(1, Math.min(OCR_WORKER_POOL_MAX, usableCores))
+  return Math.max(1, usableCores)
 }
 
 function getOcrWorkerCount(): number {
@@ -129,7 +128,7 @@ function getOcrWorkerCount(): number {
 }
 
 export function setOcrWorkerPoolSize(count: number): void {
-  const normalized = Math.max(1, Math.min(OCR_WORKER_POOL_MAX, Math.round(count)))
+  const normalized = Math.max(1, Math.round(count))
   if (configuredWorkerCount === normalized) return
   configuredWorkerCount = normalized
   console.log(`[ocr] worker pool size set: ${normalized}`)

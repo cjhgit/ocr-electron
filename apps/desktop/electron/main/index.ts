@@ -23,7 +23,7 @@ import {
   type OcrNodeMode,
 } from './ocr/service'
 import { getModelAsset, isOcrModelVariant, normalizeOcrModelVariant, type OcrModelVariant } from './ocr/config'
-import { FINANCE_CHECK_ROW_CONCURRENCY } from './finance-checker/constants'
+import { FINANCE_CHECK_OCR_WORKER_COUNT } from './finance-checker/constants'
 import {
   cancelFinanceCheckTask,
   createFinanceCheckTask,
@@ -120,15 +120,15 @@ const MODEL_BASE_URL = 'https://ai-html.obs.cn-south-1.myhuaweicloud.com:443/pad
 type AppConfig = {
   modelRoot: string
   variant: OcrModelVariant
-  financeCheckRowConcurrency: number
+  ocrWorkerCount: number
   ocrNodeMode: OcrNodeMode
   ocrNodePath: string
 }
 
-function normalizeFinanceCheckRowConcurrency(value: unknown): number {
+function normalizeOcrWorkerCount(value: unknown): number {
   const numeric = Number(value)
-  if (!Number.isFinite(numeric)) return FINANCE_CHECK_ROW_CONCURRENCY
-  return Math.max(1, Math.min(20, Math.round(numeric)))
+  if (!Number.isFinite(numeric)) return FINANCE_CHECK_OCR_WORKER_COUNT
+  return Math.max(1, Math.round(numeric))
 }
 
 type MultipartUpload = {
@@ -219,15 +219,16 @@ async function logRendererState(label: string) {
 }
 
 function normalizeAppConfig(value: unknown): AppConfig {
-  const config = value as Partial<AppConfig> | null
+  const config = value as (Partial<AppConfig> & { financeCheckRowConcurrency?: number }) | null
   const nodeConfig = normalizeOcrNodeConfig({
     mode: config?.ocrNodeMode,
     customPath: config?.ocrNodePath,
   })
+  const ocrWorkerCountSource = config?.ocrWorkerCount ?? config?.financeCheckRowConcurrency
   return {
     modelRoot: typeof config?.modelRoot === 'string' ? config.modelRoot : '',
     variant: normalizeOcrModelVariant(config?.variant),
-    financeCheckRowConcurrency: normalizeFinanceCheckRowConcurrency(config?.financeCheckRowConcurrency),
+    ocrWorkerCount: normalizeOcrWorkerCount(ocrWorkerCountSource),
     ocrNodeMode: nodeConfig.mode,
     ocrNodePath: nodeConfig.customPath,
   }
@@ -240,7 +241,7 @@ async function readAppConfig(): Promise<AppConfig> {
     return {
       modelRoot: '',
       variant: 'v5_server',
-      financeCheckRowConcurrency: FINANCE_CHECK_ROW_CONCURRENCY,
+      ocrWorkerCount: FINANCE_CHECK_OCR_WORKER_COUNT,
       ocrNodeMode: 'builtin',
       ocrNodePath: '',
     }
@@ -531,7 +532,7 @@ function createHttpServer() {
   })
 
   router.post('/api/settings/config', async (ctx) => {
-    const body = ctx.request.body as Partial<AppConfig>
+    const body = ctx.request.body as Partial<AppConfig> & { financeCheckRowConcurrency?: number }
     const nodeConfig = normalizeOcrNodeConfig({
       mode: body.ocrNodeMode,
       customPath: body.ocrNodePath,
@@ -539,7 +540,7 @@ function createHttpServer() {
     const config = await saveAppConfig({
       modelRoot: typeof body.modelRoot === 'string' ? body.modelRoot.trim() : '',
       variant: normalizeOcrModelVariant(body.variant),
-      financeCheckRowConcurrency: normalizeFinanceCheckRowConcurrency(body.financeCheckRowConcurrency),
+      ocrWorkerCount: normalizeOcrWorkerCount(body.ocrWorkerCount ?? body.financeCheckRowConcurrency),
       ocrNodeMode: nodeConfig.mode,
       ocrNodePath: nodeConfig.customPath,
     })
@@ -603,7 +604,7 @@ function createHttpServer() {
     const upload = await parseMultipartUpload(ctx)
     const modelRoot = upload.fields.modelRoot?.trim()
     const variant = upload.fields.variant as OcrModelVariant | undefined
-    const rowConcurrency = normalizeFinanceCheckRowConcurrency(upload.fields.rowConcurrency)
+    const ocrWorkerCount = normalizeOcrWorkerCount(upload.fields.ocrWorkerCount ?? upload.fields.rowConcurrency)
 
     if (!upload.file) {
       ctx.status = 400
@@ -629,7 +630,7 @@ function createHttpServer() {
         content: upload.file.content,
         modelRoot,
         modelVariant: variant,
-        rowConcurrency,
+        ocrWorkerCount,
       }),
     }
   })

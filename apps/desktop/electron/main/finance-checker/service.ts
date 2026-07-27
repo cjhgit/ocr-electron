@@ -7,7 +7,7 @@ import { nanoid } from 'nanoid'
 import type { Context } from 'koa'
 import type { OcrModelVariant } from '../ocr/config'
 import { recognizeImageFromPath, setDefaultOcrRuntime, setOcrWorkerPoolSize } from '../ocr/service'
-import { FINANCE_CHECK_AMOUNT_TOLERANCE, FINANCE_CHECK_ROW_CONCURRENCY } from './constants'
+import { FINANCE_CHECK_AMOUNT_TOLERANCE, FINANCE_CHECK_OCR_WORKER_COUNT } from './constants'
 import {
   auditOutputFilename,
   writeAuditWorkbook,
@@ -72,7 +72,7 @@ export type FinanceCheckTask = {
   sheetName: string | null
   modelVariant: OcrModelVariant | null
   tolerance: number
-  rowConcurrency: number
+  ocrWorkerCount: number
   summary: FinanceCheckSummary | null
   totalRows: number | null
   processedRows: number | null
@@ -91,6 +91,7 @@ type StoredTask = FinanceCheckTask & {
   modelRoot?: string | null
   resultPath: string | null
   cancelledRequested?: boolean
+  rowConcurrency?: number
 }
 
 type StoreData = {
@@ -120,7 +121,7 @@ function publicTask(task: StoredTask): FinanceCheckTask {
     sheetName: task.sheetName,
     modelVariant: task.modelVariant ?? null,
     tolerance: task.tolerance,
-    rowConcurrency: task.rowConcurrency ?? FINANCE_CHECK_ROW_CONCURRENCY,
+    ocrWorkerCount: task.ocrWorkerCount ?? task.rowConcurrency ?? FINANCE_CHECK_OCR_WORKER_COUNT,
     summary: task.summary,
     totalRows: task.totalRows,
     processedRows: task.processedRows,
@@ -239,12 +240,12 @@ function upsertItem(items: FinanceCheckTaskItem[], item: FinanceCheckTaskItem): 
 
 async function runTask(task: StoredTask): Promise<void> {
   const started = Date.now()
-  const rowConcurrency = task.rowConcurrency ?? FINANCE_CHECK_ROW_CONCURRENCY
+  const ocrWorkerCount = task.ocrWorkerCount ?? task.rowConcurrency ?? FINANCE_CHECK_OCR_WORKER_COUNT
   if (task.modelRoot && task.modelVariant) {
     setDefaultOcrRuntime({ modelRoot: task.modelRoot, variant: task.modelVariant })
   }
-  setOcrWorkerPoolSize(rowConcurrency)
-  console.log(`[finance-check] 任务开始: taskId=${task.id}, file=${task.sourcePath}, model=${task.modelVariant ?? '-'}, concurrency=${rowConcurrency}`)
+  setOcrWorkerPoolSize(ocrWorkerCount)
+  console.log(`[finance-check] 任务开始: taskId=${task.id}, file=${task.sourcePath}, model=${task.modelVariant ?? '-'}, ocrWorkerCount=${ocrWorkerCount}`)
   await updateTask(task.id, (current) => {
     current.taskStatus = 'running'
     current.startedAt = nowIso()
@@ -283,7 +284,7 @@ async function runTask(task: StoredTask): Promise<void> {
 
     const result = await checker.checkWorkbookConcurrent(task.sourcePath, {
       cacheDir: join(taskDir(task.id), '.cache'),
-      concurrency: rowConcurrency,
+      concurrency: ocrWorkerCount,
       shouldCancel: async () => {
         if (forceDeletedTaskIds.has(task.id)) return true
         const store = await readStore()
@@ -365,7 +366,7 @@ export async function createFinanceCheckTask(payload: {
   content: Buffer
   modelRoot: string
   modelVariant: OcrModelVariant
-  rowConcurrency: number
+  ocrWorkerCount: number
 }): Promise<{ taskId: string; taskStatus: FinanceCheckTaskStatus }> {
   await ensureStore()
   if (extname(payload.fileName).toLowerCase() !== '.xlsx') throw new Error('仅支持 .xlsx 文件')
@@ -389,7 +390,7 @@ export async function createFinanceCheckTask(payload: {
     modelRoot: payload.modelRoot,
     modelVariant: payload.modelVariant,
     tolerance: FINANCE_CHECK_AMOUNT_TOLERANCE,
-    rowConcurrency: payload.rowConcurrency,
+    ocrWorkerCount: payload.ocrWorkerCount,
     summary: null,
     totalRows: null,
     processedRows: null,

@@ -37,7 +37,7 @@ export type OcrServerModelInfo = {
 export type AppConfig = {
   modelRoot: string
   variant: OcrModelVariant
-  financeCheckRowConcurrency: number
+  ocrWorkerCount: number
   ocrNodeMode: OcrNodeMode
   ocrNodePath: string
   ocrNodeInfo: {
@@ -175,7 +175,7 @@ export async function detectSystemNode(): Promise<{ nodePath: string | null; fou
 export async function saveAppConfig(payload: {
   modelRoot: string
   variant: OcrModelVariant
-  financeCheckRowConcurrency: number
+  ocrWorkerCount: number
   ocrNodeMode: OcrNodeMode
   ocrNodePath: string
 }): Promise<AppConfig> {

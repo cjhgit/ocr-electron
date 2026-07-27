@@ -6,7 +6,7 @@ import { shell } from 'electron'
 import { nanoid } from 'nanoid'
 import type { Context } from 'koa'
 import type { OcrModelVariant } from '../ocr/config'
-import { recognizeImageFromPath, setDefaultOcrRuntime } from '../ocr/service'
+import { recognizeImageFromPath, setDefaultOcrRuntime, setOcrWorkerPoolSize } from '../ocr/service'
 import { FINANCE_CHECK_AMOUNT_TOLERANCE, FINANCE_CHECK_ROW_CONCURRENCY } from './constants'
 import {
   auditOutputFilename,
@@ -239,10 +239,12 @@ function upsertItem(items: FinanceCheckTaskItem[], item: FinanceCheckTaskItem): 
 
 async function runTask(task: StoredTask): Promise<void> {
   const started = Date.now()
+  const rowConcurrency = task.rowConcurrency ?? FINANCE_CHECK_ROW_CONCURRENCY
   if (task.modelRoot && task.modelVariant) {
     setDefaultOcrRuntime({ modelRoot: task.modelRoot, variant: task.modelVariant })
   }
-  console.log(`[finance-check] 任务开始: taskId=${task.id}, file=${task.sourcePath}, model=${task.modelVariant ?? '-'}, concurrency=${task.rowConcurrency ?? FINANCE_CHECK_ROW_CONCURRENCY}`)
+  setOcrWorkerPoolSize(rowConcurrency)
+  console.log(`[finance-check] 任务开始: taskId=${task.id}, file=${task.sourcePath}, model=${task.modelVariant ?? '-'}, concurrency=${rowConcurrency}`)
   await updateTask(task.id, (current) => {
     current.taskStatus = 'running'
     current.startedAt = nowIso()
@@ -281,7 +283,7 @@ async function runTask(task: StoredTask): Promise<void> {
 
     const result = await checker.checkWorkbookConcurrent(task.sourcePath, {
       cacheDir: join(taskDir(task.id), '.cache'),
-      concurrency: task.rowConcurrency ?? FINANCE_CHECK_ROW_CONCURRENCY,
+      concurrency: rowConcurrency,
       shouldCancel: async () => {
         if (forceDeletedTaskIds.has(task.id)) return true
         const store = await readStore()

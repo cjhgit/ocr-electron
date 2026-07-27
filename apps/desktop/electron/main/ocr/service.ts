@@ -1,6 +1,7 @@
 import { fork, spawnSync, type ChildProcess } from 'node:child_process'
 import { existsSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { availableParallelism } from 'node:os'
 import { basename, delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { OcrModelVariant } from './config'
@@ -78,19 +79,63 @@ type OcrWorkerRequestPayload =
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
 const OCR_REQUEST_TIMEOUT_MS = 5 * 60_000
+const OCR_WORKER_RETRY_LIMIT = 2
+const OCR_WORKER_POOL_MAX = 4
 
 let defaultRuntime: OcrRuntimeOptions | null = null
 let nodeConfig: OcrNodeConfig = {
   mode: 'builtin',
   customPath: '',
 }
-let worker: ChildProcess | null = null
 let nextRequestId = 1
-const pendingRequests = new Map<number, {
+
+type PendingOcrRequest = {
+  id: number
+  request: OcrWorkerRequestPayload
   resolve: (value: { text: string }) => void
   reject: (reason: unknown) => void
   timeout: NodeJS.Timeout
-}>()
+  attempts: number
+}
+
+type OcrWorkerSlot = {
+  id: number
+  process: ChildProcess
+  output: {
+    stdout: string
+    stderr: string
+  }
+  currentRequestId: number | null
+  stopping: boolean
+}
+
+let configuredWorkerCount: number | null = null
+let nextWorkerSlotId = 1
+let workers: OcrWorkerSlot[] = []
+const pendingRequests = new Map<number, PendingOcrRequest>()
+const queuedRequestIds: number[] = []
+
+function defaultOcrWorkerCount(): number {
+  const envValue = Number(process.env.OCR_WORKER_COUNT)
+  if (Number.isFinite(envValue) && envValue > 0) {
+    return Math.max(1, Math.min(OCR_WORKER_POOL_MAX, Math.round(envValue)))
+  }
+  const usableCores = Math.max(1, availableParallelism() - 1)
+  return Math.max(1, Math.min(OCR_WORKER_POOL_MAX, usableCores))
+}
+
+function getOcrWorkerCount(): number {
+  return configuredWorkerCount ?? defaultOcrWorkerCount()
+}
+
+export function setOcrWorkerPoolSize(count: number): void {
+  const normalized = Math.max(1, Math.min(OCR_WORKER_POOL_MAX, Math.round(count)))
+  if (configuredWorkerCount === normalized) return
+  configuredWorkerCount = normalized
+  console.log(`[ocr] worker pool size set: ${normalized}`)
+  trimWorkerPool()
+  scheduleOcrRequests()
+}
 
 export function setDefaultOcrRuntime(options: OcrRuntimeOptions) {
   defaultRuntime = options
@@ -100,10 +145,9 @@ export function setOcrNodeConfig(config: OcrNodeConfig): void {
   const normalized = normalizeOcrNodeConfig(config)
   const changed = normalized.mode !== nodeConfig.mode || normalized.customPath !== nodeConfig.customPath
   nodeConfig = normalized
-  if (changed && worker) {
-    console.log('[ocr] node config changed, restarting worker process')
-    worker.kill()
-    worker = null
+  if (changed && workers.length > 0) {
+    console.log('[ocr] node config changed, restarting worker pool')
+    restartWorkerPool(new Error('OCR Node 配置已变化，请重新发起 OCR 请求'))
   }
 }
 
@@ -398,9 +442,7 @@ function appendWorkerOutput(buffer: { stdout: string; stderr: string }, stream: 
   }
 }
 
-function getWorker(): ChildProcess {
-  if (worker?.connected) return worker
-
+function createWorkerSlot(slotId: number): OcrWorkerSlot {
   const nodeInfo = resolveOcrNodeRuntimeInfo()
   if (nodeInfo.mode === 'custom') {
     if (!nodeInfo.resolvedPath) {
@@ -410,31 +452,40 @@ function getWorker(): ChildProcess {
   }
   const workerScriptPath = resolveWorkerScriptPath(nodeInfo)
   assertOnnxRuntimeNativeReady()
-  console.log('[ocr] starting worker process:', { ...nodeInfo, workerScriptPath })
+  console.log('[ocr] starting worker process:', { ...nodeInfo, workerScriptPath, slotId })
   const workerOutput = { stdout: '', stderr: '' }
-  worker = fork(workerScriptPath, [], {
+  const child = fork(workerScriptPath, [], {
     execPath: nodeInfo.resolvedPath,
     env: createWorkerEnv(nodeInfo),
     execArgv: process.execArgv.filter((arg) => !arg.startsWith('--inspect')),
     serialization: 'advanced',
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   })
-  worker.stdout?.on('data', (chunk) => {
+
+  const slot: OcrWorkerSlot = {
+    id: slotId,
+    process: child,
+    output: workerOutput,
+    currentRequestId: null,
+    stopping: false,
+  }
+
+  child.stdout?.on('data', (chunk) => {
     appendWorkerOutput(workerOutput, 'stdout', chunk)
-    process.stdout.write(`[ocr-worker:${worker?.pid ?? 'unknown'}] ${chunk}`)
+    process.stdout.write(`[ocr-worker:${child.pid ?? 'unknown'}#${slotId}] ${chunk}`)
   })
-  worker.stderr?.on('data', (chunk) => {
+  child.stderr?.on('data', (chunk) => {
     appendWorkerOutput(workerOutput, 'stderr', chunk)
-    process.stderr.write(`[ocr-worker:${worker?.pid ?? 'unknown'}] ${chunk}`)
+    process.stderr.write(`[ocr-worker:${child.pid ?? 'unknown'}#${slotId}] ${chunk}`)
   })
-  worker.on('message', (message: OcrWorkerResponse) => {
+  child.on('message', (message: OcrWorkerResponse) => {
     if ('type' in message && message.type === 'fatal') {
       const error = new Error(message.error.message)
       error.stack = message.error.stack
-      console.error('[ocr] worker fatal error:', error)
-      rejectAllPending(error)
-      worker?.kill()
-      worker = null
+      console.error(`[ocr] worker fatal error: slot=${slotId}`, error)
+      failCurrentRequest(slot, error, true)
+      slot.stopping = true
+      child.kill()
       return
     }
 
@@ -442,31 +493,102 @@ function getWorker(): ChildProcess {
     const pending = pendingRequests.get(response.id)
     if (!pending) return
     pendingRequests.delete(response.id)
+    slot.currentRequestId = null
     clearTimeout(pending.timeout)
     if (response.ok) {
       pending.resolve(response.result)
+      scheduleOcrRequests()
       return
     }
     const error = new Error(response.error.message)
     error.stack = response.error.stack
     pending.reject(error)
+    scheduleOcrRequests()
   })
-  worker.on('error', (error) => {
-    console.error('[ocr] worker process error:', error)
-    rejectAllPending(error instanceof Error ? error : new Error(String(error)))
-    worker = null
+  child.on('error', (error) => {
+    console.error(`[ocr] worker process error: slot=${slotId}`, error)
+    failCurrentRequest(slot, error instanceof Error ? error : new Error(String(error)), true)
+    slot.stopping = true
+    child.kill()
   })
-  worker.on('exit', (code, signal) => {
+  child.on('exit', (code, signal) => {
     const output = trimWorkerOutput(
       [workerOutput.stderr, workerOutput.stdout].filter(Boolean).join('\n'),
     )
-    console.error('[ocr] worker process exited:', { code, signal, output: output || undefined })
-    if (code !== 0 || pendingRequests.size > 0) {
-      rejectAllPending(formatWorkerFailure('OCR 子进程异常退出', code, signal, output || undefined))
+    console.error('[ocr] worker process exited:', { slotId, code, signal, output: output || undefined })
+    removeWorkerSlot(slot)
+    const abnormalExit = !slot.stopping && code !== 0
+    if (abnormalExit || slot.currentRequestId != null) {
+      failCurrentRequest(
+        slot,
+        formatWorkerFailure('OCR 子进程异常退出', code, signal, output || undefined),
+        true,
+      )
     }
-    worker = null
+    scheduleOcrRequests()
   })
-  return worker
+  return slot
+}
+
+function removeWorkerSlot(slot: OcrWorkerSlot): void {
+  workers = workers.filter((workerSlot) => workerSlot !== slot)
+}
+
+function stopWorkerSlot(slot: OcrWorkerSlot): void {
+  slot.stopping = true
+  slot.process.kill()
+}
+
+function restartWorkerPool(error: Error): void {
+  rejectAllPending(error)
+  for (const slot of workers) {
+    stopWorkerSlot(slot)
+  }
+  workers = []
+}
+
+function trimWorkerPool(): void {
+  const targetCount = getOcrWorkerCount()
+  const extraWorkers = workers.slice(targetCount)
+  for (const slot of extraWorkers) {
+    if (slot.currentRequestId == null) {
+      stopWorkerSlot(slot)
+      removeWorkerSlot(slot)
+    }
+  }
+}
+
+function ensureWorkerPool(): void {
+  const targetCount = getOcrWorkerCount()
+  while (workers.length < targetCount) {
+    workers.push(createWorkerSlot(nextWorkerSlotId))
+    nextWorkerSlotId += 1
+  }
+}
+
+function getIdleWorker(): OcrWorkerSlot | null {
+  return workers.find((slot) => slot.currentRequestId == null && slot.process.connected && !slot.stopping) ?? null
+}
+
+function requeueRequest(pending: PendingOcrRequest): void {
+  queuedRequestIds.unshift(pending.id)
+}
+
+function failCurrentRequest(slot: OcrWorkerSlot, error: Error, retryable: boolean): void {
+  const requestId = slot.currentRequestId
+  if (requestId == null) return
+  slot.currentRequestId = null
+  const pending = pendingRequests.get(requestId)
+  if (!pending) return
+  if (retryable && pending.attempts <= OCR_WORKER_RETRY_LIMIT) {
+    console.warn(`[ocr] retry request after worker failure: id=${requestId}, attempts=${pending.attempts}`)
+    requeueRequest(pending)
+    scheduleOcrRequests()
+    return
+  }
+  pendingRequests.delete(requestId)
+  clearTimeout(pending.timeout)
+  pending.reject(error)
 }
 
 function rejectAllPending(error: Error): void {
@@ -475,27 +597,54 @@ function rejectAllPending(error: Error): void {
     pending.reject(error)
   }
   pendingRequests.clear()
+  queuedRequestIds.length = 0
+}
+
+function scheduleOcrRequests(): void {
+  if (queuedRequestIds.length === 0) return
+  ensureWorkerPool()
+  while (queuedRequestIds.length > 0) {
+    const slot = getIdleWorker()
+    if (!slot) return
+    const requestId = queuedRequestIds.shift()!
+    const pending = pendingRequests.get(requestId)
+    if (!pending) continue
+    pending.attempts += 1
+    slot.currentRequestId = requestId
+    slot.process.send({ ...pending.request, id: pending.id }, (error) => {
+      if (!error) return
+      if (slot.currentRequestId === requestId) slot.currentRequestId = null
+      const activePending = pendingRequests.get(requestId)
+      if (!activePending) return
+      if (activePending.attempts <= OCR_WORKER_RETRY_LIMIT) {
+        requeueRequest(activePending)
+        scheduleOcrRequests()
+        return
+      }
+      pendingRequests.delete(requestId)
+      clearTimeout(activePending.timeout)
+      activePending.reject(error)
+    })
+  }
 }
 
 function callWorker(request: OcrWorkerRequestPayload): Promise<{ text: string }> {
   const id = nextRequestId
   nextRequestId += 1
-  const activeWorker = getWorker()
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
-      pendingRequests.delete(id)
-      reject(new Error(`OCR 识别超时：${Math.round(OCR_REQUEST_TIMEOUT_MS / 1000)} 秒内未返回`))
-      activeWorker.kill()
-    }, OCR_REQUEST_TIMEOUT_MS)
-    pendingRequests.set(id, { resolve, reject, timeout })
-    activeWorker.send({ ...request, id }, (error) => {
-      if (!error) return
       const pending = pendingRequests.get(id)
-      if (!pending) return
       pendingRequests.delete(id)
-      clearTimeout(pending.timeout)
-      pending.reject(error)
-    })
+      const queuedIndex = queuedRequestIds.indexOf(id)
+      if (queuedIndex >= 0) queuedRequestIds.splice(queuedIndex, 1)
+      reject(new Error(`OCR 识别超时：${Math.round(OCR_REQUEST_TIMEOUT_MS / 1000)} 秒内未返回`))
+      const activeSlot = workers.find((slot) => slot.currentRequestId === id)
+      if (activeSlot) stopWorkerSlot(activeSlot)
+      if (pending) scheduleOcrRequests()
+    }, OCR_REQUEST_TIMEOUT_MS)
+    pendingRequests.set(id, { id, request, resolve, reject, timeout, attempts: 0 })
+    queuedRequestIds.push(id)
+    scheduleOcrRequests()
   })
 }
 

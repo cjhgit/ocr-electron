@@ -1,6 +1,6 @@
-import { mkdir, readFile, rm, stat, writeFile, copyFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat, writeFile, copyFile } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
-import { basename, extname, join, resolve, sep } from 'node:path'
+import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { shell } from 'electron'
 import { nanoid } from 'nanoid'
@@ -104,8 +104,10 @@ const FILES_DIR = join(DATA_DIR, 'files')
 const PROGRESS_FLUSH_INTERVAL_MS = 1000
 
 let processing = false
+let storeQueue = Promise.resolve()
 let deleting = Promise.resolve()
 const forceDeletedTaskIds = new Set<string>()
+const cancelRequestedTaskIds = new Set<string>()
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -154,8 +156,16 @@ async function readJson<T>(path: string, fallback: T): Promise<T> {
 }
 
 async function writeJson(path: string, value: unknown): Promise<void> {
-  await mkdir(join(path, '..'), { recursive: true })
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  await mkdir(dirname(path), { recursive: true })
+  const tempPath = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`)
+  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  try {
+    await rename(tempPath, path)
+  } catch {
+    // Windows 上目标文件存在时 rename 可能失败，先删再替换
+    await rm(path, { force: true })
+    await rename(tempPath, path)
+  }
 }
 
 async function readStore(): Promise<StoreData> {
@@ -167,13 +177,23 @@ async function writeStore(store: StoreData): Promise<void> {
   await writeJson(TASKS_FILE, store)
 }
 
+async function withStore<T>(fn: (store: StoreData) => Promise<T> | T): Promise<T> {
+  const run = storeQueue.then(async () => {
+    const store = await readStore()
+    return await fn(store)
+  })
+  storeQueue = run.then(() => undefined, () => undefined)
+  return run
+}
+
 async function updateTask(taskId: string, updater: (task: StoredTask) => void): Promise<StoredTask | null> {
-  const store = await readStore()
-  const task = store.tasks.find((item) => item.id === taskId) ?? null
-  if (!task) return null
-  updater(task)
-  await writeStore(store)
-  return task
+  return withStore(async (store) => {
+    const task = store.tasks.find((item) => item.id === taskId) ?? null
+    if (!task) return null
+    updater(task)
+    await writeStore(store)
+    return task
+  })
 }
 
 function itemPath(taskId: string): string {
@@ -287,9 +307,11 @@ async function runTask(task: StoredTask): Promise<void> {
       concurrency: ocrWorkerCount,
       shouldCancel: async () => {
         if (forceDeletedTaskIds.has(task.id)) return true
+        if (cancelRequestedTaskIds.has(task.id)) return true
         const store = await readStore()
         const current = store.tasks.find((item) => item.id === task.id)
-        return !current || current.cancelledRequested === true
+        // 仅认显式取消标记；不要把「读 store 失败 / 短暂找不到任务」当成取消
+        return current?.cancelledRequested === true
       },
       onRowProcessed: async (processedRows, totalRows, rowResult) => {
         ensureTaskNotForceDeleted()
@@ -322,7 +344,9 @@ async function runTask(task: StoredTask): Promise<void> {
       current.progressPercent = 100
       current.finishedAt = nowIso()
       current.durationMs = Date.now() - started
+      current.cancelledRequested = false
     })
+    cancelRequestedTaskIds.delete(task.id)
     console.log(`[finance-check] 任务完成: taskId=${task.id}, duration=${Date.now() - started}ms`)
   } catch (error) {
     const isCancelled = error instanceof FinanceCheckCancelledError
@@ -333,6 +357,7 @@ async function runTask(task: StoredTask): Promise<void> {
     }
     if (forceDeletedTaskIds.has(task.id)) {
       forceDeletedTaskIds.delete(task.id)
+      cancelRequestedTaskIds.delete(task.id)
       return
     }
     await updateTask(task.id, (current) => {
@@ -340,7 +365,9 @@ async function runTask(task: StoredTask): Promise<void> {
       current.errorMessage = isCancelled ? null : error instanceof Error ? error.message : '对账失败'
       current.finishedAt = nowIso()
       current.durationMs = Date.now() - started
+      current.cancelledRequested = false
     })
+    cancelRequestedTaskIds.delete(task.id)
   }
 }
 
@@ -407,9 +434,10 @@ export async function createFinanceCheckTask(payload: {
     durationMs: null,
   }
 
-  const store = await readStore()
-  store.tasks.unshift(task)
-  await writeStore(store)
+  await withStore(async (currentStore) => {
+    currentStore.tasks.unshift(task)
+    await writeStore(currentStore)
+  })
   void processQueue().catch((error) => {
     console.error('[finance-check] 启动队列失败:', error)
   })
@@ -490,33 +518,38 @@ export async function cancelFinanceCheckTask(taskId: string): Promise<boolean> {
     if (current.taskStatus === 'pending') {
       current.taskStatus = 'cancelled'
       current.finishedAt = nowIso()
+      current.cancelledRequested = false
     } else if (current.taskStatus === 'running') {
       current.cancelledRequested = true
+      cancelRequestedTaskIds.add(taskId)
     }
   })
   return Boolean(task)
 }
 
 export async function setFinanceCheckTaskArchived(taskId: string, archived: boolean): Promise<boolean> {
-  const store = await readStore()
-  const task = store.tasks.find((item) => item.id === taskId)
-  if (!task) return false
-  if (task.taskStatus === 'pending' || task.taskStatus === 'running') return false
-  task.archived = archived
-  await writeStore(store)
-  return true
+  return withStore(async (store) => {
+    const task = store.tasks.find((item) => item.id === taskId)
+    if (!task) return false
+    if (task.taskStatus === 'pending' || task.taskStatus === 'running') return false
+    task.archived = archived
+    await writeStore(store)
+    return true
+  })
 }
 
 export async function deleteFinanceCheckTask(taskId: string): Promise<boolean> {
   const result = deleting.then(async () => {
-    const store = await readStore()
-    const task = store.tasks.find((item) => item.id === taskId)
-    if (!task) return false
-    if (task.taskStatus === 'pending' || task.taskStatus === 'running') forceDeletedTaskIds.add(taskId)
-    store.tasks = store.tasks.filter((item) => item.id !== taskId)
-    await writeStore(store)
-    await rm(taskDir(taskId), { recursive: true, force: true })
-    return true
+    return withStore(async (store) => {
+      const task = store.tasks.find((item) => item.id === taskId)
+      if (!task) return false
+      if (task.taskStatus === 'pending' || task.taskStatus === 'running') forceDeletedTaskIds.add(taskId)
+      cancelRequestedTaskIds.delete(taskId)
+      store.tasks = store.tasks.filter((item) => item.id !== taskId)
+      await writeStore(store)
+      await rm(taskDir(taskId), { recursive: true, force: true })
+      return true
+    })
   })
   deleting = result.then(() => undefined, () => undefined)
   return result

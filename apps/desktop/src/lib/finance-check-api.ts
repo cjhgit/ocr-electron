@@ -94,22 +94,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function uploadFinanceCheckTask(payload: {
-  file: File
+  filePath: string
   modelRoot: string
   variant: OcrModelVariant
   ocrWorkerCount: number
 }) {
-  const formData = new FormData()
-  formData.set('file', payload.file, payload.file.name)
-  formData.set('modelRoot', payload.modelRoot)
-  formData.set('variant', payload.variant)
-  formData.set('ocrWorkerCount', String(payload.ocrWorkerCount))
-
   return request<{ taskId: string; taskStatus: FinanceCheckTaskStatus }>(
     '/api/finance-check/tasks',
     {
       method: 'POST',
-      body: formData,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filePath: payload.filePath,
+        modelRoot: payload.modelRoot,
+        variant: payload.variant,
+        ocrWorkerCount: payload.ocrWorkerCount,
+      }),
     },
   )
 }

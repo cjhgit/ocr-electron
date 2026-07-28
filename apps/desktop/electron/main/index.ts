@@ -5,12 +5,10 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { get as httpGet } from 'node:http'
 import { get as httpsGet } from 'node:https'
 import { homedir } from 'node:os'
-import { buffer as readStreamBuffer } from 'node:stream/consumers'
 import { fileURLToPath } from 'node:url'
 import { execSync } from 'node:child_process'
 import path from 'node:path'
 import Koa from 'koa'
-import type { Context } from 'koa'
 import Router from '@koa/router'
 import bodyParser from 'koa-bodyparser'
 import {
@@ -129,77 +127,6 @@ function normalizeOcrWorkerCount(value: unknown): number {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return FINANCE_CHECK_OCR_WORKER_COUNT
   return Math.max(1, Math.round(numeric))
-}
-
-type MultipartUpload = {
-  fields: Record<string, string>
-  file: {
-    fileName: string
-    content: Buffer
-  } | null
-}
-
-function parseContentDisposition(value: string): Record<string, string> {
-  const result: Record<string, string> = {}
-  for (const part of value.split(';')) {
-    const [rawKey, ...rawValue] = part.trim().split('=')
-    if (!rawKey || rawValue.length === 0) continue
-    result[rawKey] = rawValue.join('=').replace(/^"|"$/g, '')
-  }
-  return result
-}
-
-async function parseMultipartUpload(ctx: Context): Promise<MultipartUpload> {
-  const contentType = ctx.get('content-type')
-  const boundaryMatch = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType)
-  const boundary = boundaryMatch?.[1] ?? boundaryMatch?.[2]
-  if (!boundary) throw new Error('上传表单缺少 boundary')
-
-  const body = await readStreamBuffer(ctx.req)
-  const boundaryBuffer = Buffer.from(`--${boundary}`)
-  const headerSeparator = Buffer.from('\r\n\r\n')
-  const fields: Record<string, string> = {}
-  let file: MultipartUpload['file'] = null
-  let cursor = 0
-
-  while (true) {
-    const boundaryStart = body.indexOf(boundaryBuffer, cursor)
-    if (boundaryStart < 0) break
-    let partStart = boundaryStart + boundaryBuffer.length
-    if (body.subarray(partStart, partStart + 2).toString('latin1') === '--') break
-    if (body.subarray(partStart, partStart + 2).toString('latin1') === '\r\n') partStart += 2
-
-    const nextBoundary = body.indexOf(boundaryBuffer, partStart)
-    if (nextBoundary < 0) break
-    let partEnd = nextBoundary
-    if (body.subarray(partEnd - 2, partEnd).toString('latin1') === '\r\n') partEnd -= 2
-
-    const part = body.subarray(partStart, partEnd)
-    const headerEnd = part.indexOf(headerSeparator)
-    if (headerEnd >= 0) {
-      const rawHeaders = part.subarray(0, headerEnd).toString('utf8')
-      const content = part.subarray(headerEnd + headerSeparator.length)
-      const dispositionLine = rawHeaders
-        .split(/\r\n/)
-        .find((line) => line.toLowerCase().startsWith('content-disposition:'))
-      const disposition = dispositionLine
-        ? parseContentDisposition(dispositionLine.slice(dispositionLine.indexOf(':') + 1))
-        : {}
-      const name = disposition.name
-      if (name === 'file') {
-        file = {
-          fileName: disposition.filename || 'upload.xlsx',
-          content: Buffer.from(content),
-        }
-      } else if (name) {
-        fields[name] = content.toString('utf8')
-      }
-    }
-
-    cursor = nextBoundary
-  }
-
-  return { fields, file }
 }
 
 async function logRendererState(label: string) {
@@ -601,14 +528,21 @@ function createHttpServer() {
   })
 
   router.post('/api/finance-check/tasks', async (ctx) => {
-    const upload = await parseMultipartUpload(ctx)
-    const modelRoot = upload.fields.modelRoot?.trim()
-    const variant = upload.fields.variant as OcrModelVariant | undefined
-    const ocrWorkerCount = normalizeOcrWorkerCount(upload.fields.ocrWorkerCount ?? upload.fields.rowConcurrency)
+    const body = (ctx.request.body ?? {}) as {
+      filePath?: string
+      modelRoot?: string
+      variant?: OcrModelVariant
+      ocrWorkerCount?: number | string
+      rowConcurrency?: number | string
+    }
+    const modelRoot = body.modelRoot?.trim()
+    const variant = body.variant
+    const ocrWorkerCount = normalizeOcrWorkerCount(body.ocrWorkerCount ?? body.rowConcurrency)
+    const filePath = body.filePath?.trim()
 
-    if (!upload.file) {
+    if (!filePath) {
       ctx.status = 400
-      ctx.body = { code: -1, message: '请上传 Excel 文件' }
+      ctx.body = { code: -1, message: '请选择 Excel 文件' }
       return
     }
     if (!modelRoot) {
@@ -623,15 +557,22 @@ function createHttpServer() {
     }
     await readAppliedAppConfig()
     setDefaultOcrRuntime({ modelRoot, variant })
-    ctx.body = {
-      code: 0,
-      data: await createFinanceCheckTask({
-        fileName: upload.file.fileName,
-        content: upload.file.content,
-        modelRoot,
-        modelVariant: variant,
-        ocrWorkerCount,
-      }),
+    try {
+      ctx.body = {
+        code: 0,
+        data: await createFinanceCheckTask({
+          filePath,
+          modelRoot,
+          modelVariant: variant,
+          ocrWorkerCount,
+        }),
+      }
+    } catch (error) {
+      ctx.status = 400
+      ctx.body = {
+        code: -1,
+        message: error instanceof Error ? error.message : '创建任务失败',
+      }
     }
   })
 

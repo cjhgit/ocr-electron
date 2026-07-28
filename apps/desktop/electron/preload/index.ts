@@ -1,1 +1,7 @@
-// Preload script — 当前 hello world 版本无需暴露 API
+import { contextBridge, webUtils } from 'electron'
+
+contextBridge.exposeInMainWorld('electronAPI', {
+  getPathForFile(file: File): string {
+    return webUtils.getPathForFile(file)
+  },
+})

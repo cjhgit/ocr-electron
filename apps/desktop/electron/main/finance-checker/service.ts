@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat, writeFile, copyFile } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
@@ -362,21 +362,24 @@ async function processQueue(): Promise<void> {
 }
 
 export async function createFinanceCheckTask(payload: {
-  fileName: string
-  content: Buffer
+  filePath: string
   modelRoot: string
   modelVariant: OcrModelVariant
   ocrWorkerCount: number
 }): Promise<{ taskId: string; taskStatus: FinanceCheckTaskStatus }> {
   await ensureStore()
-  if (extname(payload.fileName).toLowerCase() !== '.xlsx') throw new Error('仅支持 .xlsx 文件')
+  const sourceFilePath = resolve(payload.filePath)
+  const sourceStat = await stat(sourceFilePath)
+  if (!sourceStat.isFile()) throw new Error('源文件不存在')
+  const originalName = basename(sourceFilePath)
+  if (extname(originalName).toLowerCase() !== '.xlsx') throw new Error('仅支持 .xlsx 文件')
 
   const id = nanoid()
   const dir = taskDir(id)
   await mkdir(dir, { recursive: true })
-  const safeName = basename(payload.fileName).replace(/[\\/:*?"<>|]/g, '_')
+  const safeName = originalName.replace(/[\\/:*?"<>|]/g, '_')
   const sourcePath = join(dir, safeName)
-  await writeFile(sourcePath, payload.content)
+  await copyFile(sourceFilePath, sourcePath)
   await writeJson(itemPath(id), [])
 
   const task: StoredTask = {

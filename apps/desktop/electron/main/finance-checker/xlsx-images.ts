@@ -1,7 +1,13 @@
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { basename, join } from 'node:path'
-import AdmZip from 'adm-zip'
 import { DOMParser } from '@xmldom/xmldom'
+import type { Entry, ZipFile } from 'yauzl'
+import {
+  extractZipEntryToFile,
+  openZipIndex,
+  readZipEntries,
+  type OpenZipIndex,
+} from './zip-io'
 
 const PKG_REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
 const ETC_NS = 'http://www.wps.cn/officeDocument/2017/etCustomData'
@@ -23,16 +29,18 @@ export function extractDispimgId(value: unknown): string | null {
   return null
 }
 
-export function loadImageIdMap(xlsxPath: string): Map<string, string> {
-  const zip = new AdmZip(xlsxPath)
-  const cellImagesEntry = zip.getEntry('xl/cellimages.xml')
-  if (!cellImagesEntry) return new Map()
-  const relsEntry = zip.getEntry('xl/_rels/cellimages.xml.rels')
-  if (!relsEntry) return new Map()
+export async function loadImageIdMap(xlsxPath: string): Promise<Map<string, string>> {
+  const entries = await readZipEntries(xlsxPath, [
+    'xl/cellimages.xml',
+    'xl/_rels/cellimages.xml.rels',
+  ])
+  const cellImagesData = entries.get('xl/cellimages.xml')
+  const relsData = entries.get('xl/_rels/cellimages.xml.rels')
+  if (!cellImagesData || !relsData) return new Map()
 
   const parser = new DOMParser()
-  const cellImagesDoc = parser.parseFromString(cellImagesEntry.getData().toString('utf8'), 'application/xml')
-  const relsDoc = parser.parseFromString(relsEntry.getData().toString('utf8'), 'application/xml')
+  const cellImagesDoc = parser.parseFromString(cellImagesData.toString('utf8'), 'application/xml')
+  const relsDoc = parser.parseFromString(relsData.toString('utf8'), 'application/xml')
   const relMap = new Map<string, string>()
 
   for (const rel of Array.from(relsDoc.getElementsByTagNameNS(PKG_REL_NS, 'Relationship'))) {
@@ -55,14 +63,15 @@ export function loadImageIdMap(xlsxPath: string): Map<string, string> {
 }
 
 export class WorkbookImageExtractor {
-  private readonly zip: AdmZip
+  private readonly indexPromise: Promise<OpenZipIndex>
   private readonly extracted = new Map<string, Promise<string | null>>()
+  private closed = false
 
   constructor(
     xlsxPath: string,
     private readonly outputDir: string,
   ) {
-    this.zip = new AdmZip(xlsxPath)
+    this.indexPromise = openZipIndex(xlsxPath)
   }
 
   resolveImagePath(
@@ -79,13 +88,25 @@ export class WorkbookImageExtractor {
     return this.extracted.get(mediaName)!
   }
 
+  async close(): Promise<void> {
+    if (this.closed) return
+    this.closed = true
+    try {
+      const { zip } = await this.indexPromise
+      zip.close()
+    } catch {
+      // ignore close errors after failed open
+    }
+  }
+
   private async extractMedia(mediaName: string): Promise<string | null> {
-    const entry = this.zip.getEntry(`xl/media/${mediaName}`)
-    if (!entry || entry.isDirectory) return null
+    const { zip, entries } = await this.indexPromise
+    const entry = entries.get(`xl/media/${mediaName}`)
+    if (!entry || /\/$/.test(entry.fileName)) return null
 
     await mkdir(this.outputDir, { recursive: true })
     const target = join(this.outputDir, mediaName)
-    await writeFile(target, entry.getData())
+    await extractZipEntryToFile(zip as ZipFile, entry as Entry, target)
     return target
   }
 }

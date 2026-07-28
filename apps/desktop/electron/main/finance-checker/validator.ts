@@ -6,7 +6,11 @@ import {
   parseMerchantScreenshot,
   parsePaymentScreenshot,
 } from './ocr-parser'
-import { FINANCE_CHECK_AMOUNT_TOLERANCE, FINANCE_CHECK_OCR_WORKER_COUNT } from './constants'
+import {
+  FINANCE_CHECK_AMOUNT_TOLERANCE,
+  FINANCE_CHECK_OCR_WORKER_COUNT,
+  FINANCE_CHECK_ROW_BATCH_SIZE,
+} from './constants'
 import {
   parseStructuredScreenshot,
   type StructuredScreenshot,
@@ -19,7 +23,7 @@ import type {
   WorkbookCheckResult,
 } from './types'
 import { CheckStatusKey, overallStatus, summarizeRows } from './types'
-import { loadRows } from './excel-reader'
+import { iterateRowBatches } from './excel-reader'
 import {
   loadImageIdMap,
   WorkbookImageExtractor,
@@ -72,23 +76,6 @@ type RowCheckWithTimings = {
   }
 }
 
-function buildDuplicateFirstRowMap(rows: RowRecord[]): Map<number, number> {
-  const seenCouponCodes = new Map<string, number>()
-  const duplicateFirstRowByRow = new Map<number, number>()
-  for (const row of rows) {
-    if (row.isSummaryRow) continue
-    const normalizedCode = normalizeCouponCode(row.couponCode)
-    if (normalizedCode == null) continue
-    const duplicateFirstRow = seenCouponCodes.get(normalizedCode)
-    if (duplicateFirstRow == null) {
-      seenCouponCodes.set(normalizedCode, row.rowNumber)
-      continue
-    }
-    duplicateFirstRowByRow.set(row.rowNumber, duplicateFirstRow)
-  }
-  return duplicateFirstRowByRow
-}
-
 async function runWithConcurrency<T>(
   items: T[],
   concurrency: number,
@@ -125,58 +112,110 @@ export class FinanceChecker {
     options: ConcurrentWorkbookCheckOptions = {},
   ): Promise<WorkbookCheckResult> {
     const readStartedAt = Date.now()
-    const { rows, sheetName } = await loadRows(xlsxPath, options.sheetName)
-    console.log(`[finance-check] 读取 Excel 完成: ${xlsxPath}, sheet=${sheetName}, rows=${rows.length}, duration=${formatLogDuration(readStartedAt)}`)
-    if (options.rowNumbers) {
-      const available = new Set(rows.map((row) => row.rowNumber))
-      const missing = [...options.rowNumbers].filter((rowNumber) => !available.has(rowNumber))
-      if (missing.length > 0) {
-        throw new Error(`表格中不存在以下行号: ${missing.sort((a, b) => a - b).join(', ')}`)
-      }
-    }
-
     const imageCacheDir = options.cacheDir ?? join(dirname(xlsxPath), '.cache', basename(xlsxPath, '.xlsx'))
-    const imageIdMap = loadImageIdMap(xlsxPath)
+    const imageIdMap = await loadImageIdMap(xlsxPath)
     const imageExtractor = new WorkbookImageExtractor(xlsxPath, imageCacheDir)
-    const duplicateFirstRowByRow = buildDuplicateFirstRowMap(rows)
     const concurrency = options.concurrency ?? FINANCE_CHECK_OCR_WORKER_COUNT
+    const batchSize = FINANCE_CHECK_ROW_BATCH_SIZE
+    const seenCouponCodes = new Map<string, number>()
     const rowResults: RowCheckResult[] = []
-    const pendingChecks: Array<{ rowIndex: number; row: RowRecord }> = []
-    let dataRowCount = 0
-
-    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-      const row = rows[rowIndex]!
-      if (options.rowNumbers && !options.rowNumbers.has(row.rowNumber)) continue
-      if (row.isSummaryRow) {
-        if (options.limit == null && (options.rowNumbers == null || options.rowNumbers.has(row.rowNumber))) {
-          rowResults[rowIndex] = this.buildSummaryRowResult(row)
-        }
-        continue
-      }
-      if (options.limit != null && dataRowCount >= options.limit) break
-      dataRowCount += 1
-      pendingChecks.push({ rowIndex, row })
-    }
-
-    const totalRows = dataRowCount
+    let sheetName = options.sheetName ?? ''
+    let totalRows = 0
     let processed = 0
-    await runWithConcurrency(pendingChecks, concurrency, async ({ rowIndex, row }) => {
-      if (options.shouldCancel && (await options.shouldCancel())) {
-        throw new FinanceCheckCancelledError()
-      }
-      const rowStartedAt = Date.now()
-      const { rowResult, timings } = await this.buildDataRowResult(row, duplicateFirstRowByRow, imageIdMap, imageExtractor)
-      rowResults[rowIndex] = rowResult
-      processed += 1
-      console.log(`[finance-check] 第 ${row.rowNumber} 行处理完成: duration=${formatLogDuration(rowStartedAt)}, paymentImageParse=${formatOptionalLogDuration(timings.paymentImageMs)}, merchantImageParse=${formatOptionalLogDuration(timings.merchantImageMs)}, progress=${processed}/${totalRows}`)
-      await options.onRowProcessed?.(processed, totalRows, rowResult)
-    })
+    let acceptedDataRows = 0
+    let reachedLimit = false
 
-    return {
-      source: xlsxPath,
-      sheetName,
-      rows: rowResults.filter((rowResult) => rowResult != null),
-      imageCacheDir,
+    try {
+      for await (const batch of iterateRowBatches(xlsxPath, {
+        sheetName: options.sheetName,
+        batchSize,
+      })) {
+        sheetName = batch.sheetName
+        if (totalRows === 0) {
+          totalRows = options.limit != null
+            ? Math.min(batch.dataRowCount, options.limit)
+            : batch.dataRowCount
+          console.log(
+            `[finance-check] 读取 Excel 元信息完成: ${xlsxPath}, sheet=${sheetName}, dataRows=${batch.dataRowCount}, batchSize=${batchSize}, duration=${formatLogDuration(readStartedAt)}`,
+          )
+        }
+
+        const pendingChecks: RowRecord[] = []
+        for (const row of batch.rows) {
+          if (options.rowNumbers && !options.rowNumbers.has(row.rowNumber)) continue
+          if (row.isSummaryRow) {
+            if (options.limit == null && (options.rowNumbers == null || options.rowNumbers.has(row.rowNumber))) {
+              rowResults.push(this.buildSummaryRowResult(row))
+            }
+            continue
+          }
+          if (options.limit != null && acceptedDataRows >= options.limit) {
+            reachedLimit = true
+            break
+          }
+          acceptedDataRows += 1
+          const normalizedCode = normalizeCouponCode(row.couponCode)
+          if (normalizedCode != null && !seenCouponCodes.has(normalizedCode)) {
+            seenCouponCodes.set(normalizedCode, row.rowNumber)
+          }
+          pendingChecks.push(row)
+        }
+
+        const duplicateFirstRowByRow = new Map<number, number>()
+        for (const row of pendingChecks) {
+          const normalizedCode = normalizeCouponCode(row.couponCode)
+          if (normalizedCode == null) continue
+          const firstRow = seenCouponCodes.get(normalizedCode)
+          if (firstRow != null && firstRow !== row.rowNumber) {
+            duplicateFirstRowByRow.set(row.rowNumber, firstRow)
+          }
+        }
+
+        console.log(
+          `[finance-check] 开始处理批次 #${batch.batchIndex}: rows=${pendingChecks.length}, progress=${processed}/${totalRows || batch.dataRowCount}`,
+        )
+
+        await runWithConcurrency(pendingChecks, concurrency, async (row) => {
+          if (options.shouldCancel && (await options.shouldCancel())) {
+            throw new FinanceCheckCancelledError()
+          }
+          const rowStartedAt = Date.now()
+          const { rowResult, timings } = await this.buildDataRowResult(
+            row,
+            duplicateFirstRowByRow,
+            imageIdMap,
+            imageExtractor,
+          )
+          rowResults.push(rowResult)
+          processed += 1
+          console.log(
+            `[finance-check] 第 ${row.rowNumber} 行处理完成: duration=${formatLogDuration(rowStartedAt)}, paymentImageParse=${formatOptionalLogDuration(timings.paymentImageMs)}, merchantImageParse=${formatOptionalLogDuration(timings.merchantImageMs)}, progress=${processed}/${totalRows}`,
+          )
+          await options.onRowProcessed?.(processed, totalRows, rowResult)
+        })
+
+        // 批次结束后释放本批行引用，图片文件仍落在磁盘缓存，OCR 文本缓存保留以复用同图
+        pendingChecks.length = 0
+        if (reachedLimit) break
+      }
+
+      if (options.rowNumbers) {
+        const available = new Set(rowResults.map((item) => item.row.rowNumber))
+        const missing = [...options.rowNumbers].filter((rowNumber) => !available.has(rowNumber))
+        if (missing.length > 0) {
+          throw new Error(`表格中不存在以下行号: ${missing.sort((a, b) => a - b).join(', ')}`)
+        }
+      }
+
+      rowResults.sort((a, b) => a.row.rowNumber - b.row.rowNumber)
+      return {
+        source: xlsxPath,
+        sheetName,
+        rows: rowResults,
+        imageCacheDir,
+      }
+    } finally {
+      await imageExtractor.close()
     }
   }
 

@@ -1,7 +1,6 @@
 import { copyFile, mkdir } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import AdmZip from 'adm-zip'
 import {
   DOMParser,
   XMLSerializer,
@@ -15,6 +14,7 @@ import {
   type RowCheckResult,
   type WorkbookCheckResult,
 } from './types'
+import { readZipEntries, rewriteZipWithPatches } from './zip-io'
 
 export const AI_AUDIT_COLUMN = 'AI 审核结果'
 
@@ -467,23 +467,21 @@ export async function writeAuditWorkbook(
   sheetName?: string,
 ): Promise<string> {
   await mkdir(dirname(outputPath), { recursive: true })
-  await copyFile(sourcePath, outputPath)
 
-  const zip = new AdmZip(outputPath)
-  const entries = new Map<string, Buffer>()
-  const itemNames: string[] = []
-  for (const entry of zip.getEntries()) {
-    itemNames.push(entry.entryName)
-    entries.set(entry.entryName, entry.getData())
-  }
+  const metaEntries = await readZipEntries(sourcePath, [
+    'xl/workbook.xml',
+    'xl/_rels/workbook.xml.rels',
+    'xl/sharedStrings.xml',
+    'xl/styles.xml',
+  ])
+  const sheetPath = resolveSheetPath(metaEntries, sheetName)
+  const sheetEntries = await readZipEntries(sourcePath, [sheetPath])
+  const sheetData = sheetEntries.get(sheetPath)
+  if (!sheetData) throw new Error(`工作表文件不存在: ${sheetPath}`)
+  metaEntries.set(sheetPath, sheetData)
 
-  patchWorkbookEntries(entries, result, sheetName)
-
-  const outputZip = new AdmZip()
-  for (const name of itemNames) {
-    outputZip.addFile(name, entries.get(name)!)
-  }
-  outputZip.writeZip(outputPath)
+  patchWorkbookEntries(metaEntries, result, sheetName)
+  await rewriteZipWithPatches(sourcePath, outputPath, metaEntries)
   return outputPath
 }
 
@@ -573,24 +571,25 @@ export async function writeWorkbookWithReviewOverrides(
   sheetName?: string,
 ): Promise<string> {
   await mkdir(dirname(outputPath), { recursive: true })
-  await copyFile(sourcePath, outputPath)
 
-  if (overrides.length === 0) return outputPath
-
-  const zip = new AdmZip(outputPath)
-  const entries = new Map<string, Buffer>()
-  const itemNames: string[] = []
-  for (const entry of zip.getEntries()) {
-    itemNames.push(entry.entryName)
-    entries.set(entry.entryName, entry.getData())
+  if (overrides.length === 0) {
+    await copyFile(sourcePath, outputPath)
+    return outputPath
   }
 
-  patchReviewOverrides(entries, overrides, sheetName)
+  const metaEntries = await readZipEntries(sourcePath, [
+    'xl/workbook.xml',
+    'xl/_rels/workbook.xml.rels',
+    'xl/sharedStrings.xml',
+    'xl/styles.xml',
+  ])
+  const sheetPath = resolveSheetPath(metaEntries, sheetName)
+  const sheetEntries = await readZipEntries(sourcePath, [sheetPath])
+  const sheetData = sheetEntries.get(sheetPath)
+  if (!sheetData) throw new Error(`工作表文件不存在: ${sheetPath}`)
+  metaEntries.set(sheetPath, sheetData)
 
-  const outputZip = new AdmZip()
-  for (const name of itemNames) {
-    outputZip.addFile(name, entries.get(name)!)
-  }
-  outputZip.writeZip(outputPath)
+  patchReviewOverrides(metaEntries, overrides, sheetName)
+  await rewriteZipWithPatches(sourcePath, outputPath, metaEntries)
   return outputPath
 }

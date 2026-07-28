@@ -1323,11 +1323,16 @@ function FinanceCheckPage({
       setError('仅支持 .xlsx 文件')
       return
     }
+    const filePath = window.electronAPI?.getPathForFile(file)?.trim()
+    if (!filePath) {
+      setError('无法获取本地文件路径，请通过应用选择或拖入文件')
+      return
+    }
     setUploading(true)
     setError('')
     try {
       await uploadFinanceCheckTask({
-        file,
+        filePath,
         modelRoot: modelRoot.trim(),
         variant,
         ocrWorkerCount,

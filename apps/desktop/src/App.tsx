@@ -283,6 +283,11 @@ function SummaryText({ task }: { task: FinanceCheckTask }) {
   )
 }
 
+function formatManualReviewProgress(task: FinanceCheckTask): string {
+  if (task.totalRows == null || task.reviewedRows == null) return '-'
+  return `${task.reviewedRows}/${task.totalRows}`
+}
+
 function TaskProgress({ task, cancelling = false }: { task: FinanceCheckTask; cancelling?: boolean }) {
   if (!cancelling && task.taskStatus !== 'pending' && task.taskStatus !== 'running') return null
   const percent = task.progressPercent ?? 0
@@ -1648,7 +1653,8 @@ function FinanceCheckPage({
                   />
                 </TableHead>
                 <TableHead>文件名</TableHead>
-                <TableHead>状态</TableHead>
+                <TableHead>AI 审核状态</TableHead>
+                <TableHead>人工审核进度</TableHead>
                 <TableHead>错误信息</TableHead>
                 <TableHead>进度 / 汇总</TableHead>
                 <TableHead>耗时</TableHead>
@@ -1678,6 +1684,7 @@ function FinanceCheckPage({
                     </div>
                   </TableCell>
                   <TableCell><StatusBadge status={isCancelling ? 'cancelling' : task.taskStatus} /></TableCell>
+                  <TableCell>{formatManualReviewProgress(task)}</TableCell>
                   <TableCell className="w-55 max-w-55"><ErrorMessageCell message={task.errorMessage} /></TableCell>
                   <TableCell><TaskProgress task={task} cancelling={isCancelling} />{task.taskStatus === 'succeeded' && <SummaryText task={task} />}</TableCell>
                   <TableCell>{formatTaskDuration(task, nowMs)}</TableCell>
@@ -1702,7 +1709,7 @@ function FinanceCheckPage({
                 </TableRow>
                 )
               })}
-              {!loading && tasks.length === 0 && <TableRow><TableCell colSpan={9} className={emptyCellClass}>暂无对账任务，点击“上传表格”开始</TableCell></TableRow>}
+              {!loading && tasks.length === 0 && <TableRow><TableCell colSpan={10} className={emptyCellClass}>暂无对账任务，点击“上传表格”开始</TableCell></TableRow>}
             </TableBody>
           </Table>
         </div>

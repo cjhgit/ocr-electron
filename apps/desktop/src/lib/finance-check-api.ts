@@ -31,6 +31,7 @@ export type FinanceCheckTask = {
   summary: FinanceCheckSummary | null
   totalRows: number | null
   processedRows: number | null
+  reviewedRows: number | null
   progressPercent: number | null
   errorMessage: string | null
   resultDownloadUrl: string | null

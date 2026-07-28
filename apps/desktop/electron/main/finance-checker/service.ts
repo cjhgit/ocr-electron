@@ -76,6 +76,7 @@ export type FinanceCheckTask = {
   summary: FinanceCheckSummary | null
   totalRows: number | null
   processedRows: number | null
+  reviewedRows: number | null
   progressPercent: number | null
   errorMessage: string | null
   resultDownloadUrl: string | null
@@ -127,6 +128,7 @@ function publicTask(task: StoredTask): FinanceCheckTask {
     summary: task.summary,
     totalRows: task.totalRows,
     processedRows: task.processedRows,
+    reviewedRows: task.reviewedRows ?? null,
     progressPercent: task.progressPercent,
     errorMessage: task.errorMessage,
     resultDownloadUrl: task.resultDownloadUrl,
@@ -252,6 +254,24 @@ async function writeItems(taskId: string, items: FinanceCheckTaskItem[]): Promis
   await writeJson(itemPath(taskId), items)
 }
 
+function countReviewedRows(items: FinanceCheckTaskItem[]): number {
+  return items.filter((item) => item.reviewStatus != null).length
+}
+
+async function enrichPublicTask(task: StoredTask): Promise<FinanceCheckTask> {
+  const publicTaskValue = publicTask(task)
+  if (publicTaskValue.reviewedRows != null) return publicTaskValue
+  if (task.taskStatus === 'pending' || task.taskStatus === 'running') return publicTaskValue
+  const items = await readItems(task.id)
+  if (items.length === 0) {
+    if (task.taskStatus === 'succeeded') publicTaskValue.reviewedRows = 0
+    return publicTaskValue
+  }
+  publicTaskValue.reviewedRows = countReviewedRows(items)
+  if (publicTaskValue.totalRows == null) publicTaskValue.totalRows = items.length
+  return publicTaskValue
+}
+
 function upsertItem(items: FinanceCheckTaskItem[], item: FinanceCheckTaskItem): void {
   const existingIndex = items.findIndex((entry) => entry.id === item.id)
   if (existingIndex >= 0) items[existingIndex] = item
@@ -341,6 +361,7 @@ async function runTask(task: StoredTask): Promise<void> {
       current.summary = report.summary
       current.totalRows = result.rows.length
       current.processedRows = result.rows.length
+      current.reviewedRows = 0
       current.progressPercent = 100
       current.finishedAt = nowIso()
       current.durationMs = Date.now() - started
@@ -424,6 +445,7 @@ export async function createFinanceCheckTask(payload: {
     summary: null,
     totalRows: null,
     processedRows: null,
+    reviewedRows: null,
     progressPercent: 0,
     errorMessage: null,
     resultDownloadUrl: null,
@@ -460,8 +482,9 @@ export async function listFinanceCheckTasks(params: {
   }
   const page = Math.max(1, params.page ?? 1)
   const pageSize = Math.max(1, params.pageSize ?? 10)
+  const pageTasks = filtered.slice((page - 1) * pageSize, page * pageSize)
   return {
-    items: filtered.slice((page - 1) * pageSize, page * pageSize).map(publicTask),
+    items: await Promise.all(pageTasks.map((task) => enrichPublicTask(task))),
     total: filtered.length,
   }
 }
@@ -469,7 +492,7 @@ export async function listFinanceCheckTasks(params: {
 export async function getFinanceCheckTask(taskId: string): Promise<FinanceCheckTask | null> {
   const store = await readStore()
   const task = store.tasks.find((item) => item.id === taskId)
-  return task ? publicTask(task) : null
+  return task ? enrichPublicTask(task) : null
 }
 
 export async function updateFinanceCheckItem(
@@ -488,6 +511,12 @@ export async function updateFinanceCheckItem(
   if (update.reviewStatus !== undefined) item.reviewStatus = update.reviewStatus
   items[index] = item
   await writeItems(taskId, items)
+  if (update.reviewStatus !== undefined) {
+    await updateTask(taskId, (current) => {
+      current.reviewedRows = countReviewedRows(items)
+      if (current.totalRows == null) current.totalRows = items.length
+    })
+  }
   return item
 }
 

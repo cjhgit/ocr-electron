@@ -459,6 +459,63 @@ function AiAmountHint({
   )
 }
 
+function suggestAiRemark(item: FinanceCheckTaskItem): string | null {
+  if (item.overallStatus !== 'fail' && item.overallStatus !== 'error') return null
+
+  const paymentMsg = item.paymentMessage ?? ''
+  const merchantMsg = item.merchantMessage ?? ''
+  const paymentFail = item.paymentCheckStatus === 'fail' || item.paymentCheckStatus === 'error'
+  const merchantFail = item.merchantCheckStatus === 'fail' || item.merchantCheckStatus === 'error'
+
+  if (paymentMsg.includes('未找到实付券码截图')) return '截图缺少对应实付截图'
+  if (paymentMsg.includes('未识别到订单号') && paymentMsg.includes('尾款实收')) return '实付截图缺少实付金额'
+  if (paymentMsg.includes('未识别到券码') || paymentMsg.includes('未识别到订单号')) return '实付截图附错'
+  if (merchantMsg.includes('未识别到') || merchantMsg.includes('未找到商家实收图')) {
+    return '实收截图单号与单号不一致'
+  }
+
+  const paymentAmountMismatch = paymentMsg.includes('实付金额不一致')
+  const merchantAmountMismatch = merchantMsg.includes('商家实收不一致')
+  if (paymentAmountMismatch && merchantAmountMismatch) return '实收截图和金额已修改'
+  if (paymentAmountMismatch) return '实付金额已修改'
+  if (merchantAmountMismatch) return '实收截图和金额已修改'
+
+  if (paymentFail && paymentMsg) return paymentMsg
+  if (merchantFail && merchantMsg) return merchantMsg
+  return null
+}
+
+function AiRemarkHint({
+  suggestion,
+  draftValue,
+  onApply,
+}: {
+  suggestion: string | null
+  draftValue: string
+  onApply: (value: string) => void
+}) {
+  if (suggestion == null || suggestion.trim() === '') return null
+  const differs = draftValue.trim() !== suggestion.trim()
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      <span className={differs ? 'text-destructive' : 'text-emerald-600 dark:text-emerald-400'}>
+        AI 建议：{suggestion}
+      </span>
+      {differs && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-6 shrink-0 px-2 text-xs"
+          onClick={() => onApply(suggestion)}
+        >
+          使用 AI 建议备注
+        </Button>
+      )}
+    </div>
+  )
+}
+
 function manualReviewStatusLabel(status: FinanceCheckReviewStatus): string {
   return status === 'pass' ? '通过' : '不通过'
 }
@@ -2014,6 +2071,11 @@ function FinanceCheckReconcileView({
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </div>
+                        <AiRemarkHint
+                          suggestion={suggestAiRemark(selectedItem)}
+                          draftValue={draftRemark}
+                          onApply={setDraftRemark}
+                        />
                       </div>
                     </div>
 

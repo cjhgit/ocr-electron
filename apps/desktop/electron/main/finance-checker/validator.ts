@@ -269,11 +269,23 @@ export class FinanceChecker {
     imageExtractor: WorkbookImageExtractor,
   ): Promise<RowCheckWithTimings> {
     const paymentStartedAt = Date.now()
-    const paymentCheck = await this.checkPayment(row, imageIdMap, imageExtractor)
+    let paymentCheck: FieldCheck
+    try {
+      paymentCheck = await this.checkPayment(row, imageIdMap, imageExtractor)
+    } catch (error) {
+      console.error(`[finance-check] 第 ${row.rowNumber} 行推单实付金额核验失败`, error)
+      paymentCheck = errorCheck('推单实付金额', row.expectedPaidAmount, formatImageCheckError(error))
+    }
     const paymentImageMs = Date.now() - paymentStartedAt
 
     const merchantStartedAt = Date.now()
-    const merchantCheck = await this.checkMerchant(row, imageIdMap, imageExtractor)
+    let merchantCheck: FieldCheck
+    try {
+      merchantCheck = await this.checkMerchant(row, imageIdMap, imageExtractor)
+    } catch (error) {
+      console.error(`[finance-check] 第 ${row.rowNumber} 行商家实收核验失败`, error)
+      merchantCheck = errorCheck('商家实收', row.expectedMerchantAmount, formatImageCheckError(error))
+    }
     const merchantImageMs = Date.now() - merchantStartedAt
 
     return {
@@ -424,6 +436,14 @@ export class FinanceChecker {
       details: buildCheckDetails(imageName, imagePath, ocrText, 'merchant', { coupon_code: row.couponCode }),
     }
   }
+}
+
+function formatImageCheckError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  if (/maxMemoryUsageInMB limit exceeded/i.test(message)) {
+    return 'OCR 识别失败：图片分辨率过大或解码内存超限，请压缩图片后重试'
+  }
+  return `图片核验失败：${message}`
 }
 
 function buildCheckDetails(

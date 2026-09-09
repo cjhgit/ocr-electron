@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, rm, stat, writeFile, copyFile } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { basename, dirname, extname, join, resolve, sep } from 'node:path'
@@ -159,7 +160,7 @@ async function readJson<T>(path: string, fallback: T): Promise<T> {
 
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
-  const tempPath = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`)
+  const tempPath = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`)
   await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
   try {
     await rename(tempPath, path)

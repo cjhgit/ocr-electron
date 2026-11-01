@@ -39,7 +39,7 @@ GPU process isn't usable. Goodbye.
 ### 3. 控制台中文乱码
 
 ```text
-HTTP 鏈嶅姟鍣ㄨ繍琛屽湪 http://localhost:38765
+HTTP 鏈嶅姟鍣ㄨ繍琛屽湪 http://localhost:47821
 ```
 
 **原因**：Windows 终端默认 GBK，Node.js 输出 UTF-8。
@@ -56,7 +56,7 @@ handshake failed; returned -1, SSL error code 1, net_error -100
 
 **原因**：Chromium 后台联网（组件更新、连通性检测等）在部分网络环境下失败。
 
-**处理**：与应用功能无关，可忽略。OCR 接口走本地 `http://localhost:38765`。
+**处理**：与应用功能无关，可忽略。OCR 接口走本地 `http://localhost:47821`。
 
 ---
 

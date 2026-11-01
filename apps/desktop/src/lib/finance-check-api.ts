@@ -1,6 +1,6 @@
 import type { OcrModelVariant } from './ocr-api'
 
-const API_BASE = 'http://localhost:38765'
+const API_BASE = 'http://localhost:47821'
 
 export type FinanceCheckTaskStatus =
   | 'pending'

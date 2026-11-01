@@ -358,7 +358,7 @@ async function runTask(task: StoredTask): Promise<void> {
       current.resultFileName = resultFileName
       current.resultPath = resultPath
       current.sheetName = result.sheetName
-      current.resultDownloadUrl = `http://localhost:38765/api/finance-check/tasks/${task.id}/download`
+      current.resultDownloadUrl = `http://localhost:47821/api/finance-check/tasks/${task.id}/download`
       current.summary = report.summary
       current.totalRows = result.rows.length
       current.processedRows = result.rows.length

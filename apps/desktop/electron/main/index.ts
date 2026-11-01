@@ -1,4 +1,4 @@
-import { app, BrowserWindow, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, screen, shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { createWriteStream } from 'node:fs'
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
@@ -690,12 +690,20 @@ function createHttpServer() {
     ctx.body = { error: 'Not Found' }
   })
 
-  const PORT = 38765
+  const PORT = 47821
   const server = koaApp.listen(PORT, () => {
     console.log(`HTTP 服务器运行在 http://localhost:${PORT}`)
   })
   server.on('error', (error) => {
     console.error('[main] HTTP server error:', error)
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'EADDRINUSE') {
+      dialog.showErrorBox(
+        '端口被占用',
+        `本地服务端口 ${PORT} 已被其他进程占用（可能是其他应用），界面接口会全部不可用。\n` +
+          `请关闭占用该端口的程序后重启本应用。\n\n${error.message}`,
+      )
+    }
   })
 
   return server

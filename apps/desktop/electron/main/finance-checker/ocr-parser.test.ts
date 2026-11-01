@@ -46,6 +46,36 @@ describe('parsePaymentScreenshot', () => {
 
     expect(parsePaymentScreenshot(text).get(code!)).toBe(95)
   })
+
+  it('prefers labeled 实收金额 over the face-value 抵扣金额 after the code on 核销详情 screenshots', () => {
+    const text = [
+      '消费信息',
+      '实际消费金额 ￥298',
+      '团购券抵扣 ￥100',
+      '尾款实收 ￥198',
+      '实收金额 ¥288',
+      '团购券实收 ￥90',
+      '尾款实收 ￥198',
+      '代金券核销信息(1张)',
+      '90代100元代金券 详情>',
+      '项目ID 1324542103',
+      '核销券码 031702703114□',
+      '抵扣金额￥100',
+      '实收金额￥90',
+      '核销方式',
+      '券码状态已核销',
+      '订单信息',
+      '订单号 80014796607 □',
+      '订单状态 已完成',
+    ].join('\n')
+
+    const voucherCode = normalizeCouponCode('031702703114')
+    const orderCode = normalizeCouponCode('80014796607')
+    const payments = parsePaymentScreenshot(text)
+
+    expect(payments.get(voucherCode!)).toBe(90)
+    expect(payments.get(orderCode!)).toBe(198)
+  })
 })
 
 describe('parseMerchantScreenshot', () => {

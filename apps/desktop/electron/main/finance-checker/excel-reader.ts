@@ -1,7 +1,7 @@
 import ExcelJS from 'exceljs'
 import { FINANCE_CHECK_ROW_BATCH_SIZE } from './constants'
 import type { RowRecord } from './types'
-import { extractDispimgId } from './xlsx-images'
+import { extractDispimgId, loadSheetVerticalMerges } from './xlsx-images'
 
 const HEADER_ALIASES = {
   pushDate: ['推单日期'],
@@ -290,6 +290,8 @@ export async function* iterateRowBatches(
   const required = options.requiredFields ?? PROCESSING_REQUIRED_FIELDS
   const batchSize = Math.max(1, options.batchSize ?? FINANCE_CHECK_ROW_BATCH_SIZE)
   const selected = await inspectWorkbook(xlsxPath, options.sheetName, required)
+  const verticalMerges = await loadSheetVerticalMerges(xlsxPath, selected.sheetName)
+  const parsedRowsByNumber = new Map<number, RowRecord>()
 
   const reader = createWorkbookReader(xlsxPath)
   let batch: RowRecord[] = []
@@ -315,6 +317,18 @@ export async function* iterateRowBatches(
       if (!headerMap) continue
       const parsed = parseStreamRow(row, headerMap)
       if (!parsed) continue
+      // 合并单元格续行继承锚点行的截图（DISPIMG 只存在于合并区左上角单元格）
+      for (const anchor of verticalMerges.get(row.number) ?? []) {
+        const anchorRow = parsedRowsByNumber.get(anchor.anchorRow)
+        if (!anchorRow) continue
+        if (headerMap.paymentImage === anchor.column && parsed.paymentImageId == null) {
+          parsed.paymentImageId = anchorRow.paymentImageId
+        }
+        if (headerMap.merchantImage === anchor.column && parsed.merchantImageId == null) {
+          parsed.merchantImageId = anchorRow.merchantImageId
+        }
+      }
+      parsedRowsByNumber.set(row.number, parsed)
       batch.push(parsed)
       if (batch.length >= batchSize) {
         yielded = true

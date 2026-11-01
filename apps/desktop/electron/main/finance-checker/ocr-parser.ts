@@ -1,5 +1,7 @@
 const VOUCHER_CODE_RE = /(?<!\d)(0\d{11})(?!\d)/g
 const ORDER_CODE_RE = /(?<!\d)(80\d{9})(?!\d)/g
+// OCR 偶尔丢失券码前导 0（031754194560 -> 31754194560），仅当所在行基本只有该数字时采信
+const VOUCHER_ALT_CODE_RE = /(?<!\d)([123]\d{10})(?!\d)/g
 export const MERCHANT_ORDER_RE = /(?<!\d)(80\d{9}|0\d{11}|[123]\d{10})(?!\d)/g
 const DECIMAL_AMOUNT_RE = /(?<!\d)(\d+\.\d{2})(?!\d)/g
 const BRACKET_AMOUNT_RE = /\[(\d+(?:\.\d+)?)[^\]]*元\]/g
@@ -49,6 +51,28 @@ export function parsePaymentAmountAfterCode(text: string, start: number): number
   return decimalMatch ? Number(decimalMatch[1]) : null
 }
 
+const PAID_LABEL_RE = /实付\s*[¥￥]?\s*(\d+(?:\.\d+)?)/g
+
+/**
+ * 「待到店使用」等新版式里，实付金额（实付¥95）出现在券码上方，
+ * 券码下方反而有券面值（(1张）￥100），因此优先取距券码最近的「实付」标签金额。
+ */
+export function parsePaidAmountNearCode(text: string, codeStart: number, codeEnd: number): number | null {
+  const windowStart = Math.max(0, codeStart - 120)
+  const windowEnd = Math.min(text.length, codeEnd + 120)
+  let best: { distance: number; amount: number } | null = null
+  for (const match of text.slice(windowStart, windowEnd).matchAll(PAID_LABEL_RE)) {
+    if (match.index == null) continue
+    const value = Number(match[1])
+    if (!(value > 0 && value <= 99999)) continue
+    const matchStart = windowStart + match.index
+    const matchEnd = matchStart + match[0].length
+    const distance = matchEnd <= codeStart ? codeStart - matchEnd : matchStart - codeEnd
+    if (best == null || distance < best.distance) best = { distance, amount: value }
+  }
+  return best?.amount ?? null
+}
+
 function registerPaymentPair(pairs: Map<string, number>, code: string | null, amount: number | null): void {
   const normalized = normalizeCouponCode(code)
   if (normalized && amount != null) pairs.set(normalized, amount)
@@ -62,6 +86,22 @@ function collectPaymentCodes(text: string): Array<[number, number, string]> {
       if (match.index != null) {
         matches.set(match.index, [match.index, match.index + match[0].length, match[1] ?? match[0]])
       }
+    }
+  }
+  VOUCHER_ALT_CODE_RE.lastIndex = 0
+  for (const match of text.matchAll(VOUCHER_ALT_CODE_RE)) {
+    const index = match.index
+    if (index == null || matches.has(index)) continue
+    const rawCode = match[1] ?? match[0]
+    const normalized = normalizeCouponCode(rawCode)
+    if (!normalized) continue
+    const lineStart = text.lastIndexOf('\n', index - 1) + 1
+    const newlineIndex = text.indexOf('\n', index)
+    const line = text.slice(lineStart, newlineIndex === -1 ? text.length : newlineIndex)
+    const digitsOnly = line.replace(/\D/g, '')
+    // 所在行数字长度需与券码接近，避免把日期、手机号等长数字串误认成券码
+    if (digitsOnly.length <= normalized.length + 4) {
+      matches.set(index, [index, index + match[0].length, rawCode])
     }
   }
   return [...matches.keys()].sort((a, b) => a - b).map((key) => matches.get(key)!)
@@ -162,11 +202,12 @@ export function parsePaymentScreenshot(text: string): Map<string, number> {
   const pairs = new Map<string, number>()
   const codes = collectPaymentCodes(text)
   for (let index = 0; index < codes.length; index += 1) {
-    const [, end, code] = codes[index]!
+    const [start, end, code] = codes[index]!
     const nextStart = index + 1 < codes.length ? codes[index + 1]![0] : end + 80
     const snippetEnd = Math.min(nextStart, end + 80)
     const snippet = text.slice(end, snippetEnd)
-    let amount = parsePaymentAmountAfterCode(snippet, 0)
+    let amount = parsePaidAmountNearCode(text, start, end)
+    if (amount == null) amount = parsePaymentAmountAfterCode(snippet, 0)
     if (amount == null && !isOrderNumberCode(code)) amount = parseVoucherAmountNearCode(text, end)
     if (amount == null && isOrderNumberCode(code)) amount = parseOrderTailPaymentAmount(text, end)
     if (amount == null && isOrderNumberCode(code)) amount = parseTailPaymentAmount(text, end)

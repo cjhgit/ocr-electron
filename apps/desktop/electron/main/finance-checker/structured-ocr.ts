@@ -70,6 +70,7 @@ function detectPage(lines: string[]): string | null {
   if (joined.includes('订单详情')) return 'order_detail'
   if (joined.includes('买单详情')) return 'pay_bill_detail'
   if (joined.includes('团购详情')) return 'group_buy_detail'
+  if (joined.includes('待到店使用')) return 'order_detail'
   if (joined.includes('买单') && joined.includes('收益')) return 'pay_bill_detail'
   if (joined.includes('团购') && joined.includes('收益')) return 'group_buy_detail'
   return null

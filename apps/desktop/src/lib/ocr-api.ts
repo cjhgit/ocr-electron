@@ -34,12 +34,15 @@ export type OcrServerModelInfo = {
   ready: boolean
 }
 
+export type ThemePreference = 'system' | 'light' | 'dark'
+
 export type AppConfig = {
   modelRoot: string
   variant: OcrModelVariant
   ocrWorkerCount: number
   ocrNodeMode: OcrNodeMode
   ocrNodePath: string
+  theme: ThemePreference
   ocrNodeInfo: {
     mode: OcrNodeMode
     customPath: string
@@ -178,6 +181,7 @@ export async function saveAppConfig(payload: {
   ocrWorkerCount: number
   ocrNodeMode: OcrNodeMode
   ocrNodePath: string
+  theme: ThemePreference
 }): Promise<AppConfig> {
   const response = await fetch(`${OCR_API_BASE}/api/settings/config`, {
     method: 'POST',

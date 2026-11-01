@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, nativeTheme, screen, shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { createWriteStream } from 'node:fs'
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
@@ -115,12 +115,19 @@ const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json')
 const DEFAULT_MODEL_ROOT = path.join(CONFIG_DIR, 'paddleocr-js-onnx')
 const MODEL_BASE_URL = 'https://ai-html.obs.cn-south-1.myhuaweicloud.com:443/paddleocr-js-onnx'
 
+type ThemePreference = 'system' | 'light' | 'dark'
+
 type AppConfig = {
   modelRoot: string
   variant: OcrModelVariant
   ocrWorkerCount: number
   ocrNodeMode: OcrNodeMode
   ocrNodePath: string
+  theme: ThemePreference
+}
+
+function normalizeThemePreference(value: unknown): ThemePreference {
+  return value === 'light' || value === 'dark' ? value : 'system'
 }
 
 function normalizeOcrWorkerCount(value: unknown): number {
@@ -158,6 +165,7 @@ function normalizeAppConfig(value: unknown): AppConfig {
     ocrWorkerCount: normalizeOcrWorkerCount(ocrWorkerCountSource),
     ocrNodeMode: nodeConfig.mode,
     ocrNodePath: nodeConfig.customPath,
+    theme: normalizeThemePreference(config?.theme),
   }
 }
 
@@ -171,6 +179,7 @@ async function readAppConfig(): Promise<AppConfig> {
       ocrWorkerCount: FINANCE_CHECK_OCR_WORKER_COUNT,
       ocrNodeMode: 'builtin',
       ocrNodePath: '',
+      theme: 'system',
     }
   }
 }
@@ -181,6 +190,7 @@ async function saveAppConfig(config: AppConfig): Promise<AppConfig> {
     mode: normalized.ocrNodeMode,
     customPath: normalized.ocrNodePath,
   })
+  applyThemeConfig(normalized)
   await mkdir(CONFIG_DIR, { recursive: true })
   await writeFile(CONFIG_PATH, `${JSON.stringify(normalized, null, 2)}\n`, 'utf-8')
   return normalized
@@ -193,9 +203,18 @@ function applyOcrNodeConfig(config: AppConfig): void {
   })
 }
 
+function applyThemeConfig(config: AppConfig): void {
+  nativeTheme.themeSource = config.theme
+}
+
+function windowBackgroundColor(): string {
+  return nativeTheme.shouldUseDarkColors ? '#0a0a0a' : '#ffffff'
+}
+
 async function readAppliedAppConfig(): Promise<AppConfig> {
   const config = await readAppConfig()
   applyOcrNodeConfig(config)
+  applyThemeConfig(config)
   return config
 }
 
@@ -470,6 +489,7 @@ function createHttpServer() {
       ocrWorkerCount: normalizeOcrWorkerCount(body.ocrWorkerCount ?? body.financeCheckRowConcurrency),
       ocrNodeMode: nodeConfig.mode,
       ocrNodePath: nodeConfig.customPath,
+      theme: normalizeThemePreference(body.theme),
     })
     ctx.body = {
       code: 0,
@@ -733,7 +753,7 @@ async function createWindow() {
     icon: path.join(publicDir, 'favicon.ico'),
     width,
     height,
-    backgroundColor: '#ffffff',
+    backgroundColor: windowBackgroundColor(),
     webPreferences,
   })
 
@@ -773,6 +793,10 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  await readAppliedAppConfig()
+  nativeTheme.on('updated', () => {
+    win?.setBackgroundColor(windowBackgroundColor())
+  })
   await createWindow()
   createHttpServer()
   if (isDev) {

@@ -20,6 +20,7 @@ import {
   RefreshCw,
   ScanSearch,
   Settings,
+  SunMoon,
   Trash2,
   Upload,
   X,
@@ -66,7 +67,9 @@ import {
   type OcrNodeMode,
   type OcrModelVariant,
   type OcrServerModelInfo,
+  type ThemePreference,
 } from './lib/ocr-api'
+import { applyThemeClass, watchSystemTheme } from './lib/theme'
 import {
   archiveFinanceCheckTask,
   cancelFinanceCheckTask,
@@ -173,7 +176,13 @@ const OCR_MODEL_OPTIONS: Array<{ value: OcrModelVariant; label: string; badge?: 
   },
 ]
 
-type SettingsTab = 'model' | 'debug' | 'about'
+type SettingsTab = 'model' | 'appearance' | 'debug' | 'about'
+
+const THEME_OPTIONS: Array<{ value: ThemePreference; label: string; description: string }> = [
+  { value: 'system', label: '跟随系统', description: '随操作系统外观自动切换' },
+  { value: 'light', label: '浅色', description: '始终使用浅色主题' },
+  { value: 'dark', label: '深色', description: '始终使用深色主题' },
+]
 
 const pageShellClass = 'mx-auto flex min-h-screen w-full max-w-[1600px] flex-col gap-5 p-6 max-sm:p-4'
 const bottomRightInfoClass = 'pointer-events-none fixed right-4 bottom-4 flex items-center gap-1.5 text-xs text-muted-foreground select-none'
@@ -877,12 +886,14 @@ function OcrSettings({
   ocrNodeMode,
   ocrNodePath,
   configPath,
+  theme,
   onModelRootChange,
   onVariantChange,
   onOcrWorkerCountChange,
   onOcrNodeModeChange,
   onOcrNodePathChange,
   onConfigChange,
+  onThemeChange,
   onModelInfoChange,
 }: {
   modelRoot: string
@@ -891,12 +902,14 @@ function OcrSettings({
   ocrNodeMode: OcrNodeMode
   ocrNodePath: string
   configPath: string
+  theme: ThemePreference
   onModelRootChange: (value: string) => void
   onVariantChange: (value: OcrModelVariant) => void
   onOcrWorkerCountChange: (value: number) => void
   onOcrNodeModeChange: (value: OcrNodeMode) => void
   onOcrNodePathChange: (value: string) => void
   onConfigChange: (modelRoot: string, variant: OcrModelVariant, ocrWorkerCount: number) => void
+  onThemeChange: (value: ThemePreference) => void
   onModelInfoChange: (value: OcrServerModelInfo) => void
 }) {
   const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTab>('model')
@@ -917,6 +930,7 @@ function OcrSettings({
   const settingsTabs = useMemo(
     () => [
       { key: 'model' as const, label: '模型', icon: Cpu },
+      { key: 'appearance' as const, label: '外观', icon: SunMoon },
       { key: 'debug' as const, label: '调试', icon: Bug },
       { key: 'about' as const, label: '关于', icon: InfoIcon },
     ],
@@ -1191,6 +1205,39 @@ function OcrSettings({
                   {detectSystemNodeError && <p className={errorTextClass}>{detectSystemNodeError}</p>}
                 </div>
               )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="appearance" className={pageStackClass}>
+          <Card>
+            <CardHeader>
+              <CardTitle>主题</CardTitle>
+              <CardDescription>
+                应用界面外观，默认跟随操作系统
+              </CardDescription>
+            </CardHeader>
+            <CardContent className={cardStackClass}>
+              <RadioGroup
+                value={theme}
+                onValueChange={(value) => onThemeChange(value as ThemePreference)}
+                className="grid gap-3 sm:grid-cols-3"
+              >
+                {THEME_OPTIONS.map((option) => (
+                  <label
+                    key={option.value}
+                    className={`flex min-h-16 cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${
+                      theme === option.value ? 'border-primary bg-accent' : 'hover:bg-accent/50'
+                    }`}
+                  >
+                    <RadioGroupItem value={option.value} />
+                    <span className="grid gap-1">
+                      <strong className="text-sm font-medium">{option.label}</strong>
+                      <span className="text-xs text-muted-foreground">{option.description}</span>
+                    </span>
+                  </label>
+                ))}
+              </RadioGroup>
             </CardContent>
           </Card>
         </TabsContent>
@@ -2512,6 +2559,13 @@ function App() {
   const [configPath, setConfigPath] = useState('')
   const [modelInfo, setModelInfo] = useState<OcrServerModelInfo | null>(null)
   const [configError, setConfigError] = useState('')
+  const [theme, setTheme] = useState<ThemePreference>('system')
+
+  useEffect(() => {
+    const cleanup = watchSystemTheme()
+    applyThemeClass()
+    return cleanup
+  }, [])
 
   useEffect(() => {
     async function loadConfig() {
@@ -2525,6 +2579,7 @@ function App() {
         setOcrNodePath(config.ocrNodePath)
         setOcrNodeVersion(config.ocrNodeInfo.nodeVersion)
         setConfigPath(config.configPath)
+        setTheme(config.theme)
         setModelInfo(info)
       } catch (err) {
         setConfigError(err instanceof Error ? err.message : '读取配置失败')
@@ -2545,6 +2600,7 @@ function App() {
     nextOcrWorkerCount: number,
     nextOcrNodeMode: OcrNodeMode = ocrNodeMode,
     nextOcrNodePath: string = ocrNodePath,
+    nextTheme: ThemePreference = theme,
   ) {
     try {
       const config = await saveAppConfig({
@@ -2553,6 +2609,7 @@ function App() {
         ocrWorkerCount: nextOcrWorkerCount,
         ocrNodeMode: nextOcrNodeMode,
         ocrNodePath: nextOcrNodePath,
+        theme: nextTheme,
       })
       setOcrNodeVersion(config.ocrNodeInfo.nodeVersion)
       setConfigPath(config.configPath)
@@ -2596,6 +2653,11 @@ function App() {
     void persistConfig(nextModelRoot, nextVariant, normalized)
   }
 
+  function handleThemeChange(value: ThemePreference) {
+    setTheme(value)
+    void persistConfig(modelRoot, variant, ocrWorkerCount, ocrNodeMode, ocrNodePath, value)
+  }
+
   return (
     <div className={cn(pageShellClass, hideAppHeader && !showSettings && 'gap-3 p-3 max-sm:p-3')}>
       {!hideAppHeader || showSettings ? (
@@ -2615,7 +2677,7 @@ function App() {
       {configError && <p className={errorTextClass}>{configError}</p>}
 
       {showSettings
-        ? <OcrSettings modelRoot={modelRoot} variant={variant} ocrWorkerCount={ocrWorkerCount} ocrNodeMode={ocrNodeMode} ocrNodePath={ocrNodePath} configPath={configPath} onModelRootChange={handleModelRootChange} onVariantChange={handleVariantChange} onOcrWorkerCountChange={handleOcrWorkerCountChange} onOcrNodeModeChange={handleOcrNodeModeChange} onOcrNodePathChange={handleOcrNodePathChange} onConfigChange={handleConfigChange} onModelInfoChange={setModelInfo} />
+        ? <OcrSettings modelRoot={modelRoot} variant={variant} ocrWorkerCount={ocrWorkerCount} ocrNodeMode={ocrNodeMode} ocrNodePath={ocrNodePath} configPath={configPath} theme={theme} onModelRootChange={handleModelRootChange} onVariantChange={handleVariantChange} onOcrWorkerCountChange={handleOcrWorkerCountChange} onOcrNodeModeChange={handleOcrNodeModeChange} onOcrNodePathChange={handleOcrNodePathChange} onConfigChange={handleConfigChange} onThemeChange={handleThemeChange} onModelInfoChange={setModelInfo} />
         : <FinanceCheckPage modelRoot={modelRoot} variant={variant} ocrWorkerCount={ocrWorkerCount} modelInfo={modelInfo} onOpenSettings={() => setShowSettings(true)} onReconcileModeChange={setHideAppHeader} />}
       {(!hideAppHeader || showSettings) && (
         <div className={bottomRightInfoClass}>

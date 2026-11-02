@@ -76,6 +76,23 @@ describe('parsePaymentScreenshot', () => {
     expect(payments.get(voucherCode!)).toBe(90)
     expect(payments.get(orderCode!)).toBe(198)
   })
+
+  it('matches voucher codes split by OCR with an inner space', () => {
+    const text = [
+      '订单详情',
+      '待到店使用 领红包',
+      '【伊犁特色揪片子】精品双> ¥176',
+      '周一至周日·到店吃 ×1',
+      '随时退、过期自动退、免预约 实付¥176>',
+      '待使用券码1张 申请退款',
+      '03316892 3692复制 待使用',
+      '团购详情',
+    ].join('\n')
+
+    const code = normalizeCouponCode('033168923692')
+
+    expect(parsePaymentScreenshot(text).get(code!)).toBe(176)
+  })
 })
 
 describe('parseMerchantScreenshot', () => {

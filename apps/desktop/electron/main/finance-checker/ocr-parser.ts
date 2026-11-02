@@ -104,7 +104,44 @@ function collectPaymentCodes(text: string): Array<[number, number, string]> {
       matches.set(index, [index, index + match[0].length, rawCode])
     }
   }
+  appendCodesFromSpaceBrokenLines(text, matches)
   return [...matches.keys()].sort((a, b) => a - b).map((key) => matches.get(key)!)
+}
+
+/**
+ * OCR 偶尔把券码从中间断开（如 03316892 3692），逐行去掉空格后再补充匹配。
+ * 已含券码的行跳过，匹配到的码以整行作为位置范围（金额就近查找用）。
+ */
+function appendCodesFromSpaceBrokenLines(text: string, matches: Map<number, [number, number, string]>): void {
+  let offset = 0
+  for (const line of text.split('\n')) {
+    const lineStart = offset
+    const lineEnd = offset + line.length
+    offset = lineEnd + 1
+    if (!line.trim()) continue
+    const hasCodeInLine = [...matches.keys()].some((index) => index >= lineStart && index < lineEnd)
+    if (hasCodeInLine) continue
+    const compact = line.replace(/\s+/g, '')
+    for (const pattern of [VOUCHER_CODE_RE, ORDER_CODE_RE]) {
+      pattern.lastIndex = 0
+      const match = pattern.exec(compact)
+      if (match?.index != null) {
+        matches.set(lineStart, [lineStart, lineEnd, match[1] ?? match[0]])
+        break
+      }
+    }
+    if (matches.has(lineStart)) continue
+    VOUCHER_ALT_CODE_RE.lastIndex = 0
+    const altMatch = VOUCHER_ALT_CODE_RE.exec(compact)
+    if (altMatch?.index == null) continue
+    const rawCode = altMatch[1] ?? altMatch[0]
+    const normalized = normalizeCouponCode(rawCode)
+    if (!normalized) continue
+    const digitsOnly = compact.replace(/\D/g, '')
+    if (digitsOnly.length <= normalized.length + 4) {
+      matches.set(lineStart, [lineStart, lineEnd, rawCode])
+    }
+  }
 }
 
 export function parseTailPaymentAmount(text: string, start: number): number | null {
@@ -162,6 +199,12 @@ function isProjectLine(line: string): boolean {
 }
 
 function extractOrderIdsFromLine(line: string): string[] {
+  const orderIds = extractOrderIdsFromLineText(line)
+  // OCR 偶尔把券码从中间断开（如 03316892 3692），去空格后重试
+  return orderIds.length > 0 ? orderIds : extractOrderIdsFromLineText(line.replace(/\s+/g, ''))
+}
+
+function extractOrderIdsFromLineText(line: string): string[] {
   if (isProjectLine(line)) return []
   const orderIds: string[] = []
   MERCHANT_ORDER_RE.lastIndex = 0

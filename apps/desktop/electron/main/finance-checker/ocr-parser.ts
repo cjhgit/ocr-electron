@@ -47,7 +47,8 @@ export function parsePaymentAmountAfterCode(text: string, start: number): number
     const amount = parseYenToken(yenMatch[1] ?? '')
     if (amount != null) return amount
   }
-  const decimalMatch = /(?<!\d)(\d+\.\d{2})(?!\d)/.exec(snippet)
+  // 排除时间片段（如 11:13.32 的 13.32）被误当金额
+  const decimalMatch = /(?<![\d:：])(\d+\.\d{2})(?!\d)/.exec(snippet)
   return decimalMatch ? Number(decimalMatch[1]) : null
 }
 
@@ -179,7 +180,8 @@ function extractTailFromConsumptionAmounts(amounts: number[]): number | null {
 
 export function parseOrderTailPaymentAmount(text: string, codeEnd: number): number | null {
   const prefix = text.slice(0, codeEnd)
-  for (const pattern of [/尾款实收[^\d]{0,12}(\d+(?:\.\d+)?)/, /尾款[^\d]{0,8}实收[^\d]{0,8}(\d+(?:\.\d+)?)/]) {
+  // 「尾」也可能被误读（屌款实收 等），放宽为「款实收」
+  for (const pattern of [/款实收[^\d]{0,12}(\d+(?:\.\d+)?)/, /尾款[^\d]{0,8}实收[^\d]{0,8}(\d+(?:\.\d+)?)/]) {
     const match = pattern.exec(prefix)
     if (match) return Number(match[1])
   }
@@ -235,10 +237,9 @@ function extractRevenue(window: string): number | null {
 
 function parseVoucherAmountNearCode(text: string, codeEnd: number): number | null {
   const snippet = text.slice(codeEnd, codeEnd + 160)
-  const labelIndex = snippet.indexOf('实收金额')
-  if (labelIndex < 0) return null
-  const yenMatch = /[¥￥]\s*(\d+(?:\.\d+)?)/.exec(snippet.slice(labelIndex + '实收金额'.length))
-  return yenMatch ? Number(yenMatch[1]) : null
+  // 「实收金额」的「额」常被 OCR 误读（实收金颜/实收余颛 等），按「实收 + 短间隔 + ¥」宽松匹配
+  const labelMatch = /实收[^¥￥]{0,6}[¥￥]\s*(\d+(?:\.\d+)?)/.exec(snippet)
+  return labelMatch ? Number(labelMatch[1]) : null
 }
 
 export function parsePaymentScreenshot(text: string): Map<string, number> {
@@ -248,15 +249,151 @@ export function parsePaymentScreenshot(text: string): Map<string, number> {
     const [start, end, code] = codes[index]!
     const nextStart = index + 1 < codes.length ? codes[index + 1]![0] : end + 80
     const snippetEnd = Math.min(nextStart, end + 80)
-    const snippet = text.slice(end, snippetEnd)
-    let amount = parsePaidAmountNearCode(text, start, end)
-    if (amount == null && !isOrderNumberCode(code)) amount = parseVoucherAmountNearCode(text, end)
-    if (amount == null) amount = parsePaymentAmountAfterCode(snippet, 0)
-    if (amount == null && isOrderNumberCode(code)) amount = parseOrderTailPaymentAmount(text, end)
-    if (amount == null && isOrderNumberCode(code)) amount = parseTailPaymentAmount(text, end)
+    const amount = parseVoucherAmountAtSpan(text, start, end, code, snippetEnd)
     registerPaymentPair(pairs, code, amount)
   }
   return pairs
+}
+
+/**
+ * 券码位置的金额解析链。
+ * 订单号：实付标签（就近）→ 尾款实收（码前）→ 尾款 → 盲扫（码后）。
+ * 券码：实付标签（就近）→ 实收金额标签（码后）→ 盲扫（码后）。
+ * OCR 读坏的码可能不再满足订单号格式，调用方可传 forceOrder 按表格原始券码判定。
+ */
+export function parseVoucherAmountAtSpan(
+  text: string,
+  start: number,
+  end: number,
+  code?: string,
+  snippetEnd?: number,
+  forceOrder?: boolean,
+): number | null {
+  const snippet = text.slice(end, Math.min(snippetEnd ?? text.length, end + 80))
+  let amount = parsePaidAmountNearCode(text, start, end)
+  const order = forceOrder ?? (code ? isOrderNumberCode(code) : false)
+  if (order) {
+    if (amount == null) amount = parseOrderTailPaymentAmount(text, end)
+    if (amount == null) amount = parseTailPaymentAmount(text, end)
+    if (amount == null) amount = parsePaymentAmountAfterCode(snippet, 0)
+    if (amount == null) amount = parseUniqueNonZeroTailPayment(text)
+  } else {
+    if (amount == null) amount = parseVoucherAmountNearCode(text, end)
+    if (amount == null) amount = parsePaymentAmountAfterCode(snippet, 0)
+  }
+  return amount
+}
+
+/**
+ * 区段内全部金额候选（¥ 前缀金额 + 裸小数），供「金额锚定」使用：
+ * 标签被读坏的区段（如 实公合af 19.8），只要候选里有与期望一致的金额即可采信。
+ */
+export function parseVoucherAmountCandidatesAtSpan(text: string, end: number): number[] {
+  const window = text.slice(end, end + 120)
+  const values: number[] = []
+  for (const match of window.matchAll(/[¥￥]\s*(\d{1,4}(?:\.\d{1,2})?)/g)) {
+    values.push(Number(match[1]))
+  }
+  for (const match of window.matchAll(/(?<![\d:.])(\d{1,4}\.\d{1,2})(?!\d)/g)) {
+    values.push(Number(match[1]))
+  }
+  return [...new Set(values)]
+}
+
+/**
+ * 整图唯一的非零「尾款实收」：智能点餐短截图可能不含订单号段落，
+ * 只能靠顶部汇总里唯一的非零尾款实收（收银通道的 0 元不算）。
+ */
+export function parseUniqueNonZeroTailPayment(text: string): number | null {
+  const values: number[] = []
+  for (const match of text.matchAll(/款实收[^\d¥￥]{0,8}[¥￥]\s*(\d+(?:\.\d+)?)/g)) {
+    const value = Number(match[1])
+    if (value > 0) values.push(value)
+  }
+  const unique = [...new Set(values)]
+  return unique.length === 1 ? unique[0]! : null
+}
+
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0
+  if (a.length === 0) return b.length
+  if (b.length === 0) return a.length
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index)
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i]
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      current[j] = Math.min(current[j - 1]! + 1, previous[j]! + 1, previous[j - 1]! + cost)
+    }
+    previous = current
+  }
+  return previous[b.length]!
+}
+
+const DIGIT_RUN_RE = /(?<!\d)\d{8,16}(?!\d)/g
+
+export type FuzzyCodeSpan = {
+  start: number
+  end: number
+  run: string
+  distance: number
+}
+
+/**
+ * 全部编辑距离 <= maxDistance 的候选数字串，按距离升序（同距按出现顺序）。
+ * 供「金额锚定」回退使用：距离较远的坏码，只有当其所在区段金额与期望一致时才采信。
+ */
+export function findFuzzyCodeCandidates(text: string, code: string, maxDistance: number): FuzzyCodeSpan[] {
+  if (!code) return []
+  const candidates: FuzzyCodeSpan[] = []
+  for (const match of text.matchAll(DIGIT_RUN_RE)) {
+    const run = match[0]
+    if (match.index == null) continue
+    if (Math.abs(run.length - code.length) > maxDistance) continue
+    const distance = levenshtein(run, code)
+    if (distance > maxDistance) continue
+    candidates.push({ start: match.index, end: match.index + run.length, run, distance })
+  }
+  candidates.sort((a, b) => a.distance - b.distance || a.start - b.start)
+  return candidates
+}
+
+function isSubsequence(small: string, big: string): boolean {
+  let index = 0
+  for (const char of big) {
+    if (index < small.length && small[index] === char) index += 1
+  }
+  return index === small.length
+}
+
+/**
+ * OCR 在长图上识别券码可能丢数字或多识别（033966624104 -> 0396624104 / 0351367249160）。
+ * 精确匹配失败时，用编辑距离 <= 2 在文本中定位最接近的数字串。
+ * 丢字更多时（如 030944477795 -> 030947795，丢 3 位），回退到「按顺序子序列」匹配：
+ * 数字串是券码的子序列（丢字）或券码是数字串的子序列（多字），且长度差 <= 4。
+ */
+export function findFuzzyCodeSpan(text: string, code: string, maxDistance = 2): FuzzyCodeSpan | null {
+  if (!code) return null
+  const exactish = findFuzzyCodeCandidates(text, code, maxDistance)
+  const best = exactish[0]
+  if (best) return best
+
+  let fallback: FuzzyCodeSpan | null = null
+  for (const match of text.matchAll(DIGIT_RUN_RE)) {
+    const run = match[0]
+    if (match.index == null) continue
+    const lengthDiff = run.length - code.length
+    if (lengthDiff >= -4 && lengthDiff <= 4 && (isSubsequence(run, code) || isSubsequence(code, run))) {
+      const candidate: FuzzyCodeSpan = {
+        start: match.index,
+        end: match.index + run.length,
+        run,
+        distance: Math.abs(lengthDiff) + 2,
+      }
+      if (fallback == null || candidate.distance < fallback.distance) fallback = candidate
+    }
+  }
+  return fallback
 }
 
 export function parseMerchantScreenshot(text: string): Map<string, number> {
@@ -274,6 +411,19 @@ export function parseMerchantScreenshot(text: string): Map<string, number> {
     }
   }
   return pairs
+}
+
+/**
+ * 商家图模糊定位后的收益提取：找到坏码所在行，取其后 10 行窗口内的金额（与精确路径口径一致）。
+ */
+export function parseMerchantRevenueNearSpan(text: string, start: number): number | null {
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean)
+  const lineStart = text.lastIndexOf('\n', start - 1) + 1
+  const newlineIndex = text.indexOf('\n', start)
+  const lineText = text.slice(lineStart, newlineIndex === -1 ? text.length : newlineIndex).trim()
+  const lineIndex = lines.findIndex((line) => line === lineText)
+  if (lineIndex < 0) return null
+  return extractRevenue(lines.slice(lineIndex, lineIndex + 10).join('\n'))
 }
 
 export function parseBracketAmounts(text: string): number[] {

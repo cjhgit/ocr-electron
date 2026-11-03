@@ -1,10 +1,16 @@
 import { basename, dirname, join } from 'node:path'
 import {
   amountsEqual,
+  findFuzzyCodeCandidates,
+  findFuzzyCodeSpan,
   isOrderNumberCode,
   normalizeCouponCode,
+  parseMerchantRevenueNearSpan,
   parseMerchantScreenshot,
   parsePaymentScreenshot,
+  parseUniqueNonZeroTailPayment,
+  parseVoucherAmountAtSpan,
+  parseVoucherAmountCandidatesAtSpan,
 } from './ocr-parser'
 import {
   FINANCE_CHECK_AMOUNT_TOLERANCE,
@@ -31,6 +37,11 @@ import {
 
 function formatLogDuration(startedAt: number): string {
   return `${Date.now() - startedAt}ms`
+}
+
+/** 模糊查找键：原始券码 + 去前导 0 后的码（Excel 文本码常带 0，OCR 可能丢掉） */
+function fuzzyCodeKeys(rawCode: string | number | null, normalizedCode: string | null): string[] {
+  return [...new Set([String(rawCode ?? '').trim(), normalizedCode ?? ''].filter(Boolean))]
 }
 
 function formatOptionalLogDuration(durationMs: number | null): string {
@@ -350,9 +361,73 @@ export class FinanceChecker {
     if (!imagePath) return errorCheck(fieldName, row.expectedPaidAmount, '未找到实付券码截图')
 
     const paymentMap = await this.getPaymentMap(imagePath)
-    const actual = paymentMap.get(normalizedCode) ?? null
     const imageName = imagePath.split(/[/\\]/).pop() ?? imagePath
     const ocrText = await this.getOcrText(imagePath)
+    let actual = paymentMap.get(normalizedCode) ?? null
+    let fuzzyExtra: Record<string, unknown> | null = null
+    if (actual == null) {
+      // OCR 在长图上可能丢字或多识别（如 033966624104 -> 0396624104），编辑距离 <= 2 时模糊定位后照常取金额
+      for (const key of fuzzyCodeKeys(row.couponCode, normalizedCode)) {
+        const span = findFuzzyCodeSpan(ocrText, key)
+        if (!span) continue
+        // 用表格原始券码判定订单号类型：坏码可能不再满足 80 开头 11 位格式
+        let amount = parseVoucherAmountAtSpan(
+          ocrText,
+          span.start,
+          span.end,
+          span.run,
+          undefined,
+          isOrderNumberCode(row.couponCode),
+        )
+        if (amount != null && !amountsEqual(row.expectedPaidAmount, amount, this.tolerance)) {
+          // 区段标签可能被读坏导致取到券面值（如 ¥20 而非 19.8）：候选金额与期望一致的才校正
+          const hit = parseVoucherAmountCandidatesAtSpan(ocrText, span.end)
+            .find((candidate) => amountsEqual(row.expectedPaidAmount, candidate, this.tolerance))
+          if (hit != null) amount = hit
+        }
+        if (amount != null) {
+          actual = amount
+          fuzzyExtra = { fuzzy_matched_run: span.run, fuzzy_distance: span.distance }
+          break
+        }
+      }
+    }
+    if (actual == null) {
+      // 坏得更厉害的券码（距离 3-4）：在候选里找「区段金额与期望一致」的那个，金额对得上才采信
+      outer: for (const key of fuzzyCodeKeys(row.couponCode, normalizedCode)) {
+        for (const span of findFuzzyCodeCandidates(ocrText, key, 4)) {
+          const amount = parseVoucherAmountAtSpan(
+            ocrText,
+            span.start,
+            span.end,
+            span.run,
+            undefined,
+            isOrderNumberCode(row.couponCode),
+          )
+          if (amount != null && amountsEqual(row.expectedPaidAmount, amount, this.tolerance)) {
+            actual = amount
+            fuzzyExtra = { fuzzy_matched_run: span.run, fuzzy_distance: span.distance, amount_anchored: true }
+            break outer
+          }
+          // 标签被读坏的区段：遍历区段内多个金额候选，与期望一致的才采信
+          for (const candidate of parseVoucherAmountCandidatesAtSpan(ocrText, span.end)) {
+            if (amountsEqual(row.expectedPaidAmount, candidate, this.tolerance)) {
+              actual = candidate
+              fuzzyExtra = { fuzzy_matched_run: span.run, fuzzy_distance: span.distance, amount_anchored: true }
+              break outer
+            }
+          }
+        }
+      }
+    }
+    if (actual == null && isOrderNumberCode(row.couponCode)) {
+      // 智能点餐短截图可能整图没有订单号：用顶部汇总里唯一的非零尾款实收兜底，金额一致才通过
+      const tail = parseUniqueNonZeroTailPayment(ocrText)
+      if (tail != null && amountsEqual(row.expectedPaidAmount, tail, this.tolerance)) {
+        actual = tail
+        fuzzyExtra = { summary_tail_anchored: true }
+      }
+    }
     if (actual == null) {
       const message = isOrderNumberCode(row.couponCode)
         ? `实付券码截图中未识别到订单号 ${row.couponCode} 的尾款实收`
@@ -375,8 +450,11 @@ export class FinanceChecker {
         status: CheckStatusKey.PASS,
         expected: row.expectedPaidAmount,
         actual,
-        message: '实付金额一致',
-        details: buildCheckDetails(imageName, imagePath, ocrText, 'payment', { coupon_code: row.couponCode }),
+        message: fuzzyExtra ? '实付金额一致（券码模糊匹配）' : '实付金额一致',
+        details: buildCheckDetails(imageName, imagePath, ocrText, 'payment', {
+          coupon_code: row.couponCode,
+          ...fuzzyExtra,
+        }),
       }
     }
     return {
@@ -385,7 +463,10 @@ export class FinanceChecker {
       expected: row.expectedPaidAmount,
       actual,
       message: '实付金额不一致',
-      details: buildCheckDetails(imageName, imagePath, ocrText, 'payment', { coupon_code: row.couponCode }),
+      details: buildCheckDetails(imageName, imagePath, ocrText, 'payment', {
+        coupon_code: row.couponCode,
+        ...fuzzyExtra,
+      }),
     }
   }
 
@@ -401,9 +482,34 @@ export class FinanceChecker {
     if (!imagePath) return errorCheck(fieldName, row.expectedMerchantAmount, '未找到商家实收图')
 
     const merchantMap = await this.getMerchantMap(imagePath)
-    const actual = merchantMap.get(normalizedCode) ?? null
     const imageName = imagePath.split(/[/\\]/).pop() ?? imagePath
     const ocrText = await this.getOcrText(imagePath)
+    let actual = merchantMap.get(normalizedCode) ?? null
+    let fuzzyExtra: Record<string, unknown> | null = null
+    if (actual == null) {
+      for (const key of fuzzyCodeKeys(row.couponCode, normalizedCode)) {
+        const span = findFuzzyCodeSpan(ocrText, key)
+        if (!span) continue
+        const revenue = parseMerchantRevenueNearSpan(ocrText, span.start)
+        if (revenue != null) {
+          actual = revenue
+          fuzzyExtra = { fuzzy_matched_run: span.run, fuzzy_distance: span.distance }
+          break
+        }
+      }
+    }
+    if (actual == null) {
+      outer: for (const key of fuzzyCodeKeys(row.couponCode, normalizedCode)) {
+        for (const span of findFuzzyCodeCandidates(ocrText, key, 4)) {
+          const revenue = parseMerchantRevenueNearSpan(ocrText, span.start)
+          if (revenue != null && amountsEqual(row.expectedMerchantAmount, revenue, this.tolerance)) {
+            actual = revenue
+            fuzzyExtra = { fuzzy_matched_run: span.run, fuzzy_distance: span.distance, amount_anchored: true }
+            break outer
+          }
+        }
+      }
+    }
     if (actual == null) {
       return {
         fieldName,
@@ -423,8 +529,11 @@ export class FinanceChecker {
         status: CheckStatusKey.PASS,
         expected: row.expectedMerchantAmount,
         actual,
-        message: '商家实收一致',
-        details: buildCheckDetails(imageName, imagePath, ocrText, 'merchant', { coupon_code: row.couponCode }),
+        message: fuzzyExtra ? '商家实收一致（券码模糊匹配）' : '商家实收一致',
+        details: buildCheckDetails(imageName, imagePath, ocrText, 'merchant', {
+          coupon_code: row.couponCode,
+          ...fuzzyExtra,
+        }),
       }
     }
     return {
@@ -433,7 +542,10 @@ export class FinanceChecker {
       expected: row.expectedMerchantAmount,
       actual,
       message: '商家实收不一致',
-      details: buildCheckDetails(imageName, imagePath, ocrText, 'merchant', { coupon_code: row.couponCode }),
+      details: buildCheckDetails(imageName, imagePath, ocrText, 'merchant', {
+        coupon_code: row.couponCode,
+        ...fuzzyExtra,
+      }),
     }
   }
 }

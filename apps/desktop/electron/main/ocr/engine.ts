@@ -17,6 +17,12 @@ const OCR_INPUT_MAX_LONG_SIDE = 1920
 const OCR_DETECTION_MAX_SIDE_LENGTH = 960
 const OCR_DETECTION_MAX_SIDE_LIMIT = 1920
 
+// 竖版长图（多张券拼接）整体缩到 1920 会把券码小字压糊（如 1080x9208 -> 225x1920），
+// 长边超过阈值时改为竖向切片识别后拼接文本，每片长边不超过 1920 保持原始分辨率。
+const OCR_SEGMENT_MIN_LONG_SIDE = 3200
+const OCR_SEGMENT_HEIGHT = 1840
+const OCR_SEGMENT_OVERLAP = 160
+
 function toArrayBuffer(buffer: Buffer): ArrayBuffer {
   return buffer.buffer.slice(
     buffer.byteOffset,
@@ -177,8 +183,103 @@ async function loadImageFromPath(imagePath: string): Promise<OcrImageInput> {
   }
 }
 
+function sliceImageVertically(image: OcrImageInput): OcrImageInput[] {
+  const slice = (top: number, bottom: number): OcrImageInput => {
+    const height = bottom - top
+    const data = image.data.subarray(top * image.width * 4, bottom * image.width * 4)
+    return { width: image.width, height, data: new Uint8Array(data) }
+  }
+
+  const slices: OcrImageInput[] = []
+  const step = OCR_SEGMENT_HEIGHT - OCR_SEGMENT_OVERLAP
+  let top = 0
+  while (image.height - top > OCR_SEGMENT_HEIGHT) {
+    slices.push(slice(top, top + OCR_SEGMENT_HEIGHT))
+    top += step
+  }
+  if (image.height - top > 40) {
+    slices.push(slice(top, image.height))
+  }
+  return slices
+}
+
+function rotateRgba90(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  clockwise: boolean,
+): OcrImageInput {
+  const out = new Uint8Array(source.length)
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const srcIndex = (y * width + x) * 4
+      const dx = clockwise ? height - 1 - y : y
+      const dy = clockwise ? x : width - 1 - x
+      const dstIndex = (dy * height + dx) * 4
+      out[dstIndex] = source[srcIndex]!
+      out[dstIndex + 1] = source[srcIndex + 1]!
+      out[dstIndex + 2] = source[srcIndex + 2]!
+      out[dstIndex + 3] = source[srcIndex + 3]!
+    }
+  }
+  return { width: height, height: width, data: out }
+}
+
+function cjkRatio(text: string): number {
+  const trimmed = text.replace(/\s/g, '')
+  if (trimmed.length === 0) return 0
+  const cjkCount = (trimmed.match(/[一-鿿]/g) ?? []).length
+  return cjkCount / trimmed.length
+}
+
 export async function recognizeImageFromPath(imagePath: string, runtime: OcrRuntimeOptions) {
   const image = await loadImageFromPath(imagePath)
+
+  // 竖版长图切片识别，保持券码小字可读
+  if (image.height >= image.width && image.height > OCR_SEGMENT_MIN_LONG_SIDE) {
+    const slices = sliceImageVertically(image)
+    if (slices.length > 1) {
+      console.log(`[ocr] segmenting long image: ${image.width}x${image.height} -> ${slices.length} slices`)
+      const texts: string[] = []
+      for (const slice of slices) {
+        const result = await recognizeText({
+          modelRoot: runtime.modelRoot,
+          variant: runtime.variant,
+          image: slice,
+        })
+        texts.push(result.text)
+      }
+      return { text: texts.join('\n') }
+    }
+  }
+
+  // 明显横屏（宽高比 >= 1.3）且原方向中文占比很低时，多为手机横拍的竖版截图：
+  // 旋转两个方向各识别一次，取中文占比最高的结果。
+  // 注意：旋转乱码也会被 OCR 幻觉出不少中文字符，必须三个方向全试取最大，不能设阈值提前退出。
+  if (image.width > image.height * 1.3) {
+    const base = await recognizeText({
+      modelRoot: runtime.modelRoot,
+      variant: runtime.variant,
+      image,
+    })
+    const baseRatio = cjkRatio(base.text)
+    if (baseRatio < 0.3) {
+      let best = { text: base.text, ratio: baseRatio }
+      for (const clockwise of [true, false]) {
+        const candidate = rotateRgba90(image.data, image.width, image.height, clockwise)
+        const result = await recognizeText({
+          modelRoot: runtime.modelRoot,
+          variant: runtime.variant,
+          image: candidate,
+        })
+        const ratio = cjkRatio(result.text)
+        if (ratio > best.ratio) best = { text: result.text, ratio }
+      }
+      return best
+    }
+    return base
+  }
+
   return recognizeText({
     modelRoot: runtime.modelRoot,
     variant: runtime.variant,
